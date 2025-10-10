@@ -6,13 +6,24 @@ import json
 
 # Load API key from .env file
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    base_url="https://openai.vocareum.com/v1",
+    api_key="voc-6097587160736433027768ae0cc3b0b5d4.62999036",
+)
+
 
 class FitnessUser:
     """Represents a fitness app user."""
-    def __init__(self, id: str, age: int, fitness_level: int, 
-                 goals: List[str], preferences: List[str], 
-                 limitations: List[str] = None):
+
+    def __init__(
+        self,
+        id: str,
+        age: int,
+        fitness_level: int,
+        goals: List[str],
+        preferences: List[str],
+        limitations: List[str] = None,
+    ):
         self.id = id
         self.age = age
         self.fitness_level = fitness_level
@@ -32,23 +43,87 @@ class FitnessUser:
 # - session duration
 # based on fitness level and goals
 
+
 def deterministic_agent(user: FitnessUser) -> Dict:
     """
     Implement your logic here to generate:
     {
         "weekly_schedule": {
-            "Monday": {"type": "strength training", "duration": 45, "intensity": "moderate", "description": "..."},
-            ...
+            "Monday": {
+            "type": "Strength Training (Upper Body)",
+            "duration": 45,
+            "intensity": "High",
+            "description": "Focus on chest, shoulders, and triceps. Include compound exercises such as push-ups, presses, and rows. Finish with core stability work and gentle stretching."
+            },
+            "Tuesday": {
+            "type": "Cardio (Zone 2 – Running or Cycling)",
+            "duration": 30,
+            "intensity": "Moderate",
+            "description": "Maintain a steady aerobic pace (~60–70% max HR). Emphasize nasal breathing, posture, and consistent cadence."
+            },
+            "Wednesday": {
+            "type": "Relaxation and Regeneration (Sauna + Epsom Salt Bath + Contrast Hydrotherapy)",
+            "duration": 30,
+            "intensity": "Low",
+            "description": "Combine sauna session, Epsom salt bath, and contrast hydrotherapy (alternating hot/cold water exposure) to stimulate blood flow, enhance detoxification, and relieve lactic acid build-up. Ideal for deep recovery and nervous system reset."
+            },
+            "Thursday": {
+            "type": "Strength Training (Lower Body)",
+            "duration": 45,
+            "intensity": "Moderate",
+            "description": "Target quads, hamstrings, and glutes with squats, lunges, and bridges. Add light posterior chain work and finish with mobility exercises."
+            },
+            "Friday": {
+            "type": "Flexibility and Mobility (Yoga Flow)",
+            "duration": 30,
+            "intensity": "Low",
+            "description": "Gentle yoga emphasizing flexibility, joint mobility, and balance. Focus on deep breathing and postural awareness."
+            },
+            "Saturday": {
+            "type": "Relaxation and Regeneration",
+            "duration": 30,
+            "intensity": "Low",
+            "description": "Optional session including light sauna, Epsom salt bath, or contrast hydrotherapy. Supports circulation, reduces stress, and improves sleep quality."
+            },
+            "Sunday": {
+            "type": "Active Recovery (Walking or Light Outdoor Activity)",
+            "duration": 45,
+            "intensity": "Low",
+            "description": "Enjoy a brisk outdoor walk or gentle cycling. Maintain relaxed breathing and let your body recover naturally through movement."
+            }
         }
     }
     """
-    # Your code goes here
-    pass
+    fitness_level = user.fitness_level
+    goals = list(user.goals)
+    preferences = list(user.preferences)
+    limitations = list(user.limitations)
 
+    if fitness_level <= 2:
+        intesity = "Low"
+    elif fitness_level <= 4:
+        intensity = "Moderate"
+    else:
+        intensity = "High"
+
+    if "weight management" in goals or "fat loss" in goals:
+        work_type = "Cardio"
+    elif "strength building " in goals:
+        work_type = "Strength Training"
+    elif "joint mobility" in goals:
+        work_type = "Flexibility and Mobility"
+    elif "stress reduction" in goals:
+        work_type = "Relaxation and Regeneration"
+    else:
+        work_type = "General Conditioning"
+
+
+"outdoor activities", "swimming", "home workouts", "morning routines"
 
 # ======== AGENT 2 — LLM-Based Planner ========
 # We've handled the API part. Your task is to COMPLETE THE PROMPT below
 # that will instruct the LLM how to generate the plan.
+
 
 def llm_agent(user: FitnessUser) -> Dict:
     goals_text = ", ".join(user.goals)
@@ -75,7 +150,7 @@ def llm_agent(user: FitnessUser) -> Dict:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a certified fitness trainer."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
             temperature=0.2,
         )
@@ -87,11 +162,12 @@ def llm_agent(user: FitnessUser) -> Dict:
         return {
             "reasoning": f"LLM planning failed: {str(e)}",
             "weekly_schedule": fallback["weekly_schedule"],
-            "considerations": "Fallback to rule-based plan."
+            "considerations": "Fallback to rule-based plan.",
         }
 
 
 # ======== COMPARISON LOGIC (DO NOT EDIT) ========
+
 
 def compare_workout_planning(users: List[FitnessUser]):
     print("\n===== WORKOUT PLAN COMPARISON =====")
@@ -105,18 +181,23 @@ def compare_workout_planning(users: List[FitnessUser]):
         det_plan = deterministic_agent(user)
         print("\n[Deterministic Agent]")
         for day, workout in det_plan["weekly_schedule"].items():
-            print(f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)")
+            print(
+                f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)"
+            )
 
         llm_plan = llm_agent(user)
         print("\n[LLM Agent]")
         print(f"Reasoning: {llm_plan.get('reasoning', 'No reasoning provided')}")
         for day, workout in llm_plan["weekly_schedule"].items():
-            print(f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)")
+            print(
+                f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)"
+            )
             print(f"  {workout['description']}")
         print(f"Considerations: {llm_plan.get('considerations', 'None')}")
 
 
 # ======== SAMPLE USERS ========
+
 
 def main():
     users = [
@@ -126,7 +207,7 @@ def main():
             fitness_level=2,
             goals=["weight management", "stress reduction"],
             preferences=["home workouts", "morning routines"],
-            limitations=["limited equipment", "time constraints (max 30 min/day)"]
+            limitations=["limited equipment", "time constraints (max 30 min/day)"],
         ),
         FitnessUser(
             id="U002",
@@ -134,11 +215,12 @@ def main():
             fitness_level=3,
             goals=["joint mobility", "strength building"],
             preferences=["outdoor activities", "swimming"],
-            limitations=["mild joint stiffness"]
-        )
+            limitations=["mild joint stiffness"],
+        ),
     ]
 
     compare_workout_planning(users)
+
 
 if __name__ == "__main__":
     main()
