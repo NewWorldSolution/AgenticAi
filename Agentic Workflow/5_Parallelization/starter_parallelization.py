@@ -6,8 +6,8 @@ import threading
 # Load environment variables and initialize OpenAI client
 load_dotenv()
 client = OpenAI(
-    base_url = "https://openai.vocareum.com/v1",
-    api_key=os.getenv("OPENAI_API_KEY"))
+    base_url="https://openai.vocareum.com/v1", api_key=os.getenv("OPENAI_API_KEY")
+)
 
 # Shared dict for thread-safe collection of agent outputs
 agent_outputs = {}
@@ -40,49 +40,107 @@ This Consulting Agreement (the "Agreement") is made effective as of January 1, 2
 
 IN WITNESS WHEREOF, the parties have executed this Agreement as of the date first above written.
 """
+user_prompt = contract_text
 
-# TODO: Implement these agent classes
+
+def call_openai(
+    system_prompt,
+    user_prompt,
+    model="gpt-3.5-turbo",
+    temperature=0.2,
+):
+    """Simple wrapper for OpenAI API calls."""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+    )
+    return response.choices[0].message.content
+
 
 class LegalTermsChecker:
     """Agent that checks for problematic legal terms and clauses in contracts."""
+
     def run(self, contract_text):
-        # TODO: Implement this method to analyze legal terms
-        pass
+        system_prompt = "You are a legal expert specializing in contract law. Review the provided contract text and identify any problematic clauses, ambiguous terms, or non-standard legal language. List your key findings."
+        agent_outputs["legal"] = call_openai(system_prompt, contract_text)
+
 
 class ComplianceValidator:
     """Agent that validates regulatory and industry compliance of contracts."""
+
     def run(self, contract_text):
-        # TODO: Implement this method to check compliance
-        pass
+        system_prompt = "You are a compliance expert. Analyze the provided contract text for adherence to relevant regulatory standards and industry best practices. Highlight any compliance issues or risks."
+        agent_outputs["compliance"] = call_openai(system_prompt, contract_text)
+
 
 class FinancialRiskAssessor:
     """Agent that assesses financial risks and liabilities in contracts."""
+
     def run(self, contract_text):
-        # TODO: Implement this method to evaluate financial risks
-        pass
+        system_prompt = "You are a financial risk assessor. Evaluate the provided contract text for potential financial risks and liabilities. Identify any clauses that may pose a financial threat to the client."
+        agent_outputs["financial"] = call_openai(system_prompt, contract_text)
+
 
 class SummaryAgent:
     """Agent that synthesizes findings from all specialized agents."""
+
     def run(self, contract_text, inputs):
-        # TODO: Implement this method to create a comprehensive summary
-        pass
+        combined_prompt = (
+            f"The user asked about to analyze: '{contract_text}'\n\n"
+            f"Here are the expert responses:\n"
+            f"- Legal Expert: {inputs['legal']}\n\n"
+            f"- Compliance Expert: {inputs['compliance']}\n\n"
+            f"- Financial Expert: {inputs['financial']}\n\n"
+            "Please summarize the combined insights into a single clear and concise response."
+        )
+        print(f"Summary Agent resolving prompt: {combined_prompt}")
+        system_prompt = "You are an expert summarizer. Combine the insights from various experts into a coherent summary."
+        user_prompt_summary = combined_prompt
+        return call_openai(system_prompt, user_prompt_summary)
+
 
 # Main function to run all agents in parallel
 def analyze_contract(contract_text):
     """Run all agents in parallel and summarize their findings."""
-    # TODO: Implement parallel execution of agents
-    # 1. Create agent instances
-    # 2. Run them in parallel using threading
-    # 3. Collect their outputs
-    # 4. Generate a summary using the SummaryAgent
-    # 5. Return the final analysis
-    pass
+    # Initialize agents
+    legal_agent = LegalTermsChecker()
+    compliance_agent = ComplianceValidator()
+    financial_agent = FinancialRiskAssessor()
+    summary_agent = SummaryAgent()
+    # Create threads for parallel execution
+    threads = []
+    threads.append(threading.Thread(target=legal_agent.run, args=(contract_text,)))
+    threads.append(threading.Thread(target=compliance_agent.run, args=(contract_text,)))
+    threads.append(threading.Thread(target=financial_agent.run, args=(contract_text,)))
 
-if __name__ == "__main__":
+    # Start all threads
+    for thread in threads:
+        thread.start()
+
+    # Wait for all threads to complete
+    for thread in threads:
+        thread.join()
+
+    # Run summary agent with collected outputs
+
+    final_summary = summary_agent.run(contract_text, agent_outputs)
+
+    return final_summary
+
+
+def main():
     print("Enterprise Contract Analysis System")
     print("Analyzing contract...")
-    
-    # TODO: Call the analyze_contract function and print results
+
+    # Call the analyze_contract function and print results
     final_analysis = analyze_contract(contract_text)
     print("\n=== FINAL CONTRACT ANALYSIS ===\n")
     print(final_analysis)
+
+
+if __name__ == "__main__":
+    main()
