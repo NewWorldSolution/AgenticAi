@@ -8,14 +8,22 @@ import json
 load_dotenv()
 client = OpenAI(
     base_url="https://openai.vocareum.com/v1",
-    api_key="voc-6097587160736433027768ae0cc3b0b5d4.62999036"
+    api_key="voc-6097587160736433027768ae0cc3b0b5d4.62999036",
 )
+
 
 class FitnessUser:
     """Represents a fitness app user."""
-    def __init__(self, id: str, age: int, fitness_level: int, 
-                 goals: List[str], preferences: List[str], 
-                 limitations: List[str] = None):
+
+    def __init__(
+        self,
+        id: str,
+        age: int,
+        fitness_level: int,
+        goals: List[str],
+        preferences: List[str],
+        limitations: List[str] = None,
+    ):
         self.id = id
         self.age = age
         self.fitness_level = fitness_level
@@ -34,7 +42,8 @@ class FitnessUser:
 # - workout types
 # - session duration
 # based on fitness level and goals
-    
+
+
 def deterministic_agent(user: FitnessUser) -> Dict:
     """
     Implement your logic here to generate:
@@ -85,10 +94,10 @@ def deterministic_agent(user: FitnessUser) -> Dict:
         }
     }
     """
-    fitness_level=user.fitness_level
-    goals=list(user.goals)
+    fitness_level = user.fitness_level
+    goals = list(user.goals)
     preferences = list(user.preferences)
-    limitations=list(user.limitations)
+    limitations = list(user.limitations)
 
     if fitness_level <= 2:
         intesity = "Low"
@@ -107,12 +116,14 @@ def deterministic_agent(user: FitnessUser) -> Dict:
         work_type = "Relaxation and Regeneration"
     else:
         work_type = "General Conditioning"
-    
-"outdoor activities", "swimming","home workouts", "morning routines"
+
+
+"outdoor activities", "swimming", "home workouts", "morning routines"
 
 # ======== AGENT 2 — LLM-Based Planner ========
 # We've handled the API part. Your task is to COMPLETE THE PROMPT below
 # that will instruct the LLM how to generate the plan.
+
 
 def llm_agent(user: FitnessUser) -> Dict:
     goals_text = ", ".join(user.goals)
@@ -139,7 +150,7 @@ def llm_agent(user: FitnessUser) -> Dict:
             model="gpt-4",
             messages=[
                 {"role": "system", "content": "You are a certified fitness trainer."},
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
             temperature=0.2,
         )
@@ -151,11 +162,12 @@ def llm_agent(user: FitnessUser) -> Dict:
         return {
             "reasoning": f"LLM planning failed: {str(e)}",
             "weekly_schedule": fallback["weekly_schedule"],
-            "considerations": "Fallback to rule-based plan."
+            "considerations": "Fallback to rule-based plan.",
         }
 
 
 # ======== COMPARISON LOGIC (DO NOT EDIT) ========
+
 
 def compare_workout_planning(users: List[FitnessUser]):
     print("\n===== WORKOUT PLAN COMPARISON =====")
@@ -169,18 +181,23 @@ def compare_workout_planning(users: List[FitnessUser]):
         det_plan = deterministic_agent(user)
         print("\n[Deterministic Agent]")
         for day, workout in det_plan["weekly_schedule"].items():
-            print(f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)")
+            print(
+                f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)"
+            )
 
         llm_plan = llm_agent(user)
         print("\n[LLM Agent]")
         print(f"Reasoning: {llm_plan.get('reasoning', 'No reasoning provided')}")
         for day, workout in llm_plan["weekly_schedule"].items():
-            print(f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)")
+            print(
+                f"- {day}: {workout['type']} ({workout['intensity']}, {workout['duration']} min)"
+            )
             print(f"  {workout['description']}")
         print(f"Considerations: {llm_plan.get('considerations', 'None')}")
 
 
 # ======== SAMPLE USERS ========
+
 
 def main():
     users = [
@@ -190,7 +207,7 @@ def main():
             fitness_level=2,
             goals=["weight management", "stress reduction"],
             preferences=["home workouts", "morning routines"],
-            limitations=["limited equipment", "time constraints (max 30 min/day)"]
+            limitations=["limited equipment", "time constraints (max 30 min/day)"],
         ),
         FitnessUser(
             id="U002",
@@ -198,11 +215,12 @@ def main():
             fitness_level=3,
             goals=["joint mobility", "strength building"],
             preferences=["outdoor activities", "swimming"],
-            limitations=["mild joint stiffness"]
-        )
+            limitations=["mild joint stiffness"],
+        ),
     ]
 
     compare_workout_planning(users)
+
 
 if __name__ == "__main__":
     main()
