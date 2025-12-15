@@ -1,14 +1,23 @@
 # agentic_workflow.py
 
 # TODO: 1 - Import the following agents: ActionPlanningAgent, KnowledgeAugmentedPromptAgent, EvaluationAgent, RoutingAgent from the workflow_agents.base_agents module
-
+from Phase_1.workflow_agents.base_agents import (
+    ActionPlanningAgent,
+    KnowledgeAugmentedPromptAgent,
+    EvaluationAgent,
+    RoutingAgent,
+)
 import os
 from dotenv import load_dotenv
 
 # TODO: 2 - Load the OpenAI key into a variable called openai_api_key
+load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
 # load the product spec
 # TODO: 3 - Load the product spec document Product-Spec-Email-Router.txt into a variable called product_spec
+with open("Product-Spec-Email-Router.txt", "r") as f:
+    product_spec = f.read()
 
 # Instantiate all the agents
 
@@ -46,7 +55,9 @@ knowledge_program_manager = "Features of a product are defined by organizing sim
 # (This is a necessary step before TODO 8. Students should add the instantiation code here.)
 
 # Program Manager - Evaluation Agent
-persona_program_manager_eval = "You are an evaluation agent that checks the answers of other worker agents."
+persona_program_manager_eval = (
+    "You are an evaluation agent that checks the answers of other worker agents."
+)
 
 # TODO: 8 - Instantiate a program_manager_evaluation_agent using 'persona_program_manager_eval' and the evaluation criteria below.
 #                      "The answer should be product features that follow the following structure: " \
@@ -63,7 +74,9 @@ knowledge_dev_engineer = "Development tasks are defined by identifying what need
 # (This is a necessary step before TODO 9. Students should add the instantiation code here.)
 
 # Development Engineer - Evaluation Agent
-persona_dev_engineer_eval = "You are an evaluation agent that checks the answers of other worker agents."
+persona_dev_engineer_eval = (
+    "You are an evaluation agent that checks the answers of other worker agents."
+)
 # TODO: 9 - Instantiate a development_engineer_evaluation_agent using 'persona_dev_engineer_eval' and the evaluation criteria below.
 #                      "The answer should be tasks following this exact structure: " \
 #                      "Task ID: A unique identifier for tracking purposes\n" \
