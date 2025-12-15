@@ -52,7 +52,7 @@ class AugmentedPromptAgent:
                 # TODO: 3 - Add a system prompt instructing the agent to assume the defined persona and explicitly forget previous context.
                 {
                     "role": "system",
-                    "content": f"You are {self.persona}. Forget all previous context.",
+                    "content": f"{self.persona}\nForget all previous context.",
                 },
                 {"role": "user", "content": input_text},
             ],
