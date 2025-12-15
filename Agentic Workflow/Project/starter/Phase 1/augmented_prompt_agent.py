@@ -10,9 +10,7 @@ load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
 prompt = "What is the capital of France?"
-persona = (
-    "You are a college professor; your answers always start with: 'Dear students,'"
-)
+persona = "You are a college professor. IMPORTANT: Begin every answer with exactly: Dear students,"
 
 # TODO: 2 - Instantiate an object of AugmentedPromptAgent with the required parameters
 agent = AugmentedPromptAgent(openai_api_key=openai_api_key, persona=persona)
