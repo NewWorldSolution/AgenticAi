@@ -69,13 +69,17 @@ product_manager_evaluation_agent = EvaluationAgent(
     persona="You are an evaluation agent that evaluate criteria for product managers.",
     evaluation_criteria="""
     The output must be ONLY user stories.
-
     Rules:
-    1) Each line must match exactly: "As a [type of user], I want [action/feature] so that [benefit/value]."
-    2) Provide at least 6 user stories.
-    3) Use at least 3 distinct personas.
-    4) No feature lists, no task lists, no headings, no extra commentary.
-    5) Stories must be consistent with the product specification.
+    1) Each line must match exactly:
+    "As a [type of user], I want [action/feature] so that [benefit/value]."
+    2) Provide between 3 and 6 high-quality user stories.
+    3) Each story must represent a distinct core capability from the product specification.
+    4) Use at least 3 distinct personas.
+    5) Do not create filler or repetitive stories to reach a count.
+    6) No feature lists, no task lists, no headings, no extra commentary.
+    7) Stories must be consistent with the product specification.
+
+    A score of 6 or higher indicates the output is sufficient and should be accepted.
     """,
     worker_agent=product_manager_knowledge_agent,
     max_interactions=10,
@@ -151,6 +155,7 @@ development_engineer_evaluation_agent = EvaluationAgent(
         "Acceptance Criteria: Specific requirements that must be met for completion (must not be blank)\n"
         "Estimated Effort: Time or complexity estimation\n"
         "Dependencies: Any tasks that must be completed first"
+        "Score must be at least 7 or <= 5 if structure is not followed."
     ),
     worker_agent=development_engineer_knowledge_agent,
     max_interactions=10,
@@ -162,11 +167,17 @@ persona_risk_manager = (
 )
 
 knowledge_risk_manager = (
-    "A risk assessment identifies possible risks, their likelihood, impact, and mitigations. "
-    "Focus on delivery risk, technical risk, data/privacy risk, reliability risk, and UX risk. "
-    "Use the product specification as your primary source. "
-    "Return structured risks with clear mitigations."
-    "\n\nPRODUCT SPECIFICATION:\n"
+    "Return ONLY risks using this exact structure for EACH risk (no markdown):\n"
+    "Risk ID: <ID>\n"
+    "Risk Title: <title>\n"
+    "Description: <what could go wrong>\n"
+    "Likelihood: Low/Medium/High\n"
+    "Impact: Low/Medium/High\n"
+    "Mitigation: <concrete action>\n"
+    "Owner: <role>\n"
+    "Trigger/Early Warning: <signal>\n"
+    "Status: Open\n\n"
+    "Use ONLY the PRODUCT SPECIFICATION below.\n\n"
     f"{product_spec}"
 )
 risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -192,6 +203,7 @@ risk_manager_evaluation_agent = EvaluationAgent(
         "Trigger/Early Warning: What signals the risk is emerging\n"
         "Status: Open/Mitigating/Closed\n"
         "Return ONLY risks in this structure (no extra commentary)."
+        "Score must be at least 7 or <= 5 if structure is not followed."
     ),
     worker_agent=risk_manager_knowledge_agent,
     max_interactions=10,
@@ -304,7 +316,9 @@ completed_steps = []
 for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
     try:
-        result = routing_agent.route(step)
+        context = "\n\n".join(completed_steps)
+        step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
+        result = routing_agent.route(step_prompt)
     except Exception as e:
         print(f"Error routing step: {e}")
         result = f"Error routing step: {e}"

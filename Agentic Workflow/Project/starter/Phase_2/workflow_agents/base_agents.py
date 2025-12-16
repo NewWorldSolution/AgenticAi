@@ -316,22 +316,22 @@ class EvaluationAgent:
                 If score >= 6, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
 
                 Example of valid JSON response:
-                {{
+            {{
                     "score": 5,
-                    "issues": ["Story 2 missing 'so that' clause", "Only 2 personas used"],
-                    "fix_plan": {
-                        "must_add": ["At least 6 stories", "At least 3 personas"],
-                        "must_change": ["Rewrite Story 2 to include benefit clause", "Rewrite Story 4 to match template exactly"],
-                        "must_remove": ["Remove headings", "Remove bullet list intro sentence"],
-                        "rewrite_rules": [
-                        "One story per line",
-                        "Exact template required",
-                        "No extra commentary"
-                        ]
-                    },
-                    "revised_example": "As a ..., I want ... so that ...",
-                    "instructions": "1) ... 2) ... 3) ..."
-            }}
+                    "issues": [
+                        "Only 2 user stories provided (needs 3–6).",
+                        "Only 1 persona used (needs at least 3 personas).",
+                        "Story 2 does not match the exact template."
+                    ],
+                    "fix_plan": {{
+                        "must_add": ["Add more stories to total 3–6", "Use at least 3 distinct personas"],
+                        "must_change": ["Rewrite Story 2 to match the exact template"],
+                        "must_remove": ["Remove headings or extra commentary"],
+                        "rewrite_rules": ["One story per line", "Exact template required", "No extra commentary"]
+                    }},
+                    "revised_example": "As a Customer Support Representative, I want ... so that ...",
+                    "instructions": "1) Add 1–3 more stories to reach 3–6 total. 2) Introduce at least 2 new personas. 3) Rewrite any non-template lines to match the exact format."
+                    }}
                 """
 
             response = client.chat.completions.create(
@@ -345,23 +345,48 @@ class EvaluationAgent:
                 ],
                 temperature=0,
             )
-            raw = response.choices[0].message.content.strip()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # fallback: treat as failure and request reformat next iteration
-                data = {
-                    "score": 0,
-                    "issues": ["Evaluator returned invalid JSON."],
-                    "fix_plan": {
-                        "must_add": [],
-                        "must_change": [],
-                        "must_remove": [],
-                        "rewrite_rules": [],
-                    },
-                    "revised_example": "",
-                    "instructions": "Return ONLY valid JSON in the required format. No extra text.",
-                }
+            data = None
+            for eval_attempt in range(2):
+                raw = response.choices[0].message.content.strip()
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                try:
+                    data = json.loads(raw)
+                    break
+                except json.JSONDecodeError:
+                    if eval_attempt == 0:
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": self.persona,
+                                },
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Your previous response was not valid JSON. "
+                                        "Return ONLY valid JSON that matches the required schema.\n\n"
+                                        f"{eval_prompt}\n\n"
+                                        f"INVALID RESPONSE:\n{raw}"
+                                    ),
+                                },
+                            ],
+                            temperature=0,
+                        )
+                    else:
+                        # fallback: treat as failure and request reformat next iteration
+                        data = {
+                            "score": 0,
+                            "issues": ["Evaluator returned invalid JSON."],
+                            "fix_plan": {
+                                "must_add": [],
+                                "must_change": [],
+                                "must_remove": [],
+                                "rewrite_rules": [],
+                            },
+                            "revised_example": "",
+                            "instructions": "Return ONLY valid JSON in the required format. No extra text.",
+                        }
 
             print(f"Evaluator Agent Evaluation:\n{data}")
             final_evaluation = data
