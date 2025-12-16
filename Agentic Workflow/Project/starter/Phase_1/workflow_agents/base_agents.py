@@ -6,6 +6,7 @@ import csv
 import uuid
 from datetime import datetime
 from openai import OpenAI
+import json
 
 BASE_URL = "https://openai.vocareum.com/v1"
 
@@ -293,45 +294,99 @@ class EvaluationAgent:
             print(f"Worker Agent Response:\n{response_from_worker}")
             final_response = response_from_worker
             print(" Step 2: Evaluator agent judges the response")
-            eval_prompt = (
-                f"Does the following answer: {response_from_worker}\n"
-                f"Meet this criteria: {self.evaluation_criteria}\n"  # TODO: 4 - Insert evaluation criteria here
-                f"Respond Yes or No, and the reason why it does or doesn't meet the criteria."
-            )
+            MIN_ACCEPTABLE_SCORE = 6
+            eval_prompt = f"""
+                Evaluate the ANSWER against the CRITERIA.
+
+                CRITERIA:
+                {self.evaluation_criteria}
+
+                ANSWER:
+                {response_from_worker}
+                Return ONLY valid JSON with fields:
+                - score (integer 0-10)
+                - issues (list of strings; each issue must be specific and reference what is wrong)
+                - fix_plan (object) with keys:
+                    - must_add (list of strings)
+                    - must_change (list of strings)
+                    - must_remove (list of strings)
+                    - rewrite_rules (list of strings)
+                - revised_example (string; provide ONE corrected example line that matches the required structure)
+                - instructions (string; MUST be a numbered list of concrete edit actions the worker should perform.
+                If score >= 6, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
+
+                Example of valid JSON response:
+                {{
+                    "score": 5,
+                    "issues": ["Story 2 missing 'so that' clause", "Only 2 personas used"],
+                    "fix_plan": {
+                        "must_add": ["At least 6 stories", "At least 3 personas"],
+                        "must_change": ["Rewrite Story 2 to include benefit clause", "Rewrite Story 4 to match template exactly"],
+                        "must_remove": ["Remove headings", "Remove bullet list intro sentence"],
+                        "rewrite_rules": [
+                        "One story per line",
+                        "Exact template required",
+                        "No extra commentary"
+                        ]
+                    },
+                    "revised_example": "As a ..., I want ... so that ...",
+                    "instructions": "1) ... 2) ... 3) ..."
+            }}
+                """
+
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[  # TODO: 5 - Define the message structure sent to the LLM for evaluation (use temperature=0)
                     {
                         "role": "system",
-                        "content": f"You are {self.persona}, an evaluation agent.",
+                        "content": self.persona,
                     },
                     {"role": "user", "content": eval_prompt},
                 ],
                 temperature=0,
             )
-            evaluation = response.choices[0].message.content.strip()
-            print(f"Evaluator Agent Evaluation:\n{evaluation}")
-            final_evaluation = evaluation
+            raw = response.choices[0].message.content.strip()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # fallback: treat as failure and request reformat next iteration
+                data = {
+                    "score": 0,
+                    "issues": ["Evaluator returned invalid JSON."],
+                    "fix_plan": {
+                        "must_add": [],
+                        "must_change": [],
+                        "must_remove": [],
+                        "rewrite_rules": [],
+                    },
+                    "revised_example": "",
+                    "instructions": "Return ONLY valid JSON in the required format. No extra text.",
+                }
+
+            print(f"Evaluator Agent Evaluation:\n{data}")
+            final_evaluation = data
             print(" Step 3: Check if evaluation is positive")
-            if evaluation.lower().startswith("yes"):
-                print("✅ Final solution accepted.")
+            if data.get("score", 0) >= MIN_ACCEPTABLE_SCORE:
+                print(f"✅ Accepted with score {data['score']}/10")
                 break
             else:
-                print(" Step 4: Generate instructions to correct the response")
-                instruction_prompt = (
-                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
-                    f"Answer:\n{response_from_worker}\n\n"
-                    f"Evaluation:\n{evaluation}\n\n"
-                    f"Give clear, actionable instructions to revise the answer so it meets ALL criteria. "
-                    f"Return instructions only."
-                )
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": instruction_prompt}],
-                    temperature=0,
-                )
-                instructions = response.choices[0].message.content.strip()
+                instructions = data.get("instructions", "").strip()
                 print(f"Instructions to fix:\n{instructions}")
+
+                #               print(" Step 4: Generate instructions to correct the response")
+                #              instruction_prompt = (
+                #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
+                #                    f"The original prompt was: {initial_prompt}\n"
+                #                    f"The response to that prompt was: {response_from_worker}\n"
+                #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
+                #                    f"Make only these corrections, do not alter content validity: {instructions}"
+                #                    f"Return instructions only."
+                #                )
+                #                response = client.chat.completions.create(
+                #                    model="gpt-3.5-turbo",
+                #                    messages=[{"role": "user", "content": instruction_prompt}],
+                #                    temperature=0,
+                #                )
 
                 print(" Step 5: Send feedback to worker agent for refinement")
                 prompt_to_evaluate = (
@@ -382,7 +437,7 @@ class RoutingAgent:
 
         for agent in self.agents:
             # TODO: 5 - Compute the embedding of the agent description
-            agent_emb = self.get_embedding(agent["description"])
+            agent_emb = agent["description_embedding"]
             if agent_emb is None:
                 continue
 

@@ -304,10 +304,34 @@ class EvaluationAgent:
                 ANSWER:
                 {response_from_worker}
                 Return ONLY valid JSON with fields:
-                - pass (boolean)
                 - score (integer 0-10)
-                - issues (list of strings)
-                - instructions (string: actionable corrections if pass=false; empty if pass=true)
+                - issues (list of strings; each issue must be specific and reference what is wrong)
+                - fix_plan (object) with keys:
+                    - must_add (list of strings)
+                    - must_change (list of strings)
+                    - must_remove (list of strings)
+                    - rewrite_rules (list of strings)
+                - revised_example (string; provide ONE corrected example line that matches the required structure)
+                - instructions (string; MUST be a numbered list of concrete edit actions the worker should perform.
+                If score >= 6, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
+
+                Example of valid JSON response:
+                {{
+                    "score": 5,
+                    "issues": ["Story 2 missing 'so that' clause", "Only 2 personas used"],
+                    "fix_plan": {
+                        "must_add": ["At least 6 stories", "At least 3 personas"],
+                        "must_change": ["Rewrite Story 2 to include benefit clause", "Rewrite Story 4 to match template exactly"],
+                        "must_remove": ["Remove headings", "Remove bullet list intro sentence"],
+                        "rewrite_rules": [
+                        "One story per line",
+                        "Exact template required",
+                        "No extra commentary"
+                        ]
+                    },
+                    "revised_example": "As a ..., I want ... so that ...",
+                    "instructions": "1) ... 2) ... 3) ..."
+            }}
                 """
 
             response = client.chat.completions.create(
@@ -315,7 +339,7 @@ class EvaluationAgent:
                 messages=[  # TODO: 5 - Define the message structure sent to the LLM for evaluation (use temperature=0)
                     {
                         "role": "system",
-                        "content": f"You are {self.persona}, an evaluation agent.",
+                        "content": self.persona,
                     },
                     {"role": "user", "content": eval_prompt},
                 ],
@@ -329,6 +353,13 @@ class EvaluationAgent:
                 data = {
                     "score": 0,
                     "issues": ["Evaluator returned invalid JSON."],
+                    "fix_plan": {
+                        "must_add": [],
+                        "must_change": [],
+                        "must_remove": [],
+                        "rewrite_rules": [],
+                    },
+                    "revised_example": "",
                     "instructions": "Return ONLY valid JSON in the required format. No extra text.",
                 }
 
@@ -339,23 +370,23 @@ class EvaluationAgent:
                 print(f"✅ Accepted with score {data['score']}/10")
                 break
             else:
-                instructions = data.get("instructions")
+                instructions = data.get("instructions", "").strip()
                 print(f"Instructions to fix:\n{instructions}")
 
-                print(" Step 4: Generate instructions to correct the response")
-                instruction_prompt = (
-                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
-                    f"The original prompt was: {initial_prompt}\n"
-                    f"The response to that prompt was: {response_from_worker}\n"
-                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
-                    f"Make only these corrections, do not alter content validity: {instructions}"
-                    f"Return instructions only."
-                )
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[{"role": "user", "content": instruction_prompt}],
-                    temperature=0,
-                )
+                #               print(" Step 4: Generate instructions to correct the response")
+                #              instruction_prompt = (
+                #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
+                #                    f"The original prompt was: {initial_prompt}\n"
+                #                    f"The response to that prompt was: {response_from_worker}\n"
+                #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
+                #                    f"Make only these corrections, do not alter content validity: {instructions}"
+                #                    f"Return instructions only."
+                #                )
+                #                response = client.chat.completions.create(
+                #                    model="gpt-3.5-turbo",
+                #                    messages=[{"role": "user", "content": instruction_prompt}],
+                #                    temperature=0,
+                #                )
 
                 print(" Step 5: Send feedback to worker agent for refinement")
                 prompt_to_evaluate = (
