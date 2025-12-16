@@ -56,10 +56,10 @@ def deterministic_agent(user: FitnessUser) -> Dict:
             "description": "Focus on chest, shoulders, and triceps. Include compound exercises such as push-ups, presses, and rows. Finish with core stability work and gentle stretching."
             },
             "Tuesday": {
-            "type": "Cardio (Zone 2 – Running or Cycling)",
+            "type": "Cardio (Zone 2 : Running or Cycling)",
             "duration": 30,
             "intensity": "Moderate",
-            "description": "Maintain a steady aerobic pace (~60–70% max HR). Emphasize nasal breathing, posture, and consistent cadence."
+            "description": "Maintain a steady aerobic pace (~60 to 70% max HR). Emphasize nasal breathing, posture, and consistent cadence."
             },
             "Wednesday": {
             "type": "Relaxation and Regeneration (Sauna + Epsom Salt Bath + Contrast Hydrotherapy)",
@@ -100,7 +100,7 @@ def deterministic_agent(user: FitnessUser) -> Dict:
     limitations = list(user.limitations)
 
     if fitness_level <= 2:
-        intesity = "Low"
+        intensity = "Low"
     elif fitness_level <= 4:
         intensity = "Moderate"
     else:
