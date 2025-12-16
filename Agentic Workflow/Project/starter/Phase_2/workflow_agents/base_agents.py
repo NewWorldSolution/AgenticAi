@@ -259,6 +259,7 @@ class EvaluationAgent:
         evaluation_criteria,
         worker_agent,
         max_interactions,
+        min_acceptable_score=6,
     ):
         # Initialize the EvaluationAgent with given attributes.
         # TODO: 1 - Declare class attributes here
@@ -267,6 +268,7 @@ class EvaluationAgent:
         self.evaluation_criteria = evaluation_criteria
         self.worker_agent = worker_agent
         self.max_interactions = max_interactions
+        self.min_acceptable_score = min_acceptable_score
 
     def respond(self, initial_prompt):
         # This method is a placeholder to comply with the agent interface.
@@ -294,7 +296,6 @@ class EvaluationAgent:
             print(f"Worker Agent Response:\n{response_from_worker}")
             final_response = response_from_worker
             print(" Step 2: Evaluator agent judges the response")
-            MIN_ACCEPTABLE_SCORE = 6
             eval_prompt = f"""
                 Evaluate the ANSWER against the CRITERIA.
 
@@ -313,25 +314,7 @@ class EvaluationAgent:
                     - rewrite_rules (list of strings)
                 - revised_example (string; provide ONE corrected example line that matches the required structure)
                 - instructions (string; MUST be a numbered list of concrete edit actions the worker should perform.
-                If score >= 6, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
-
-                Example of valid JSON response:
-            {{
-                    "score": 5,
-                    "issues": [
-                        "Only 2 user stories provided (needs 3–6).",
-                        "Only 1 persona used (needs at least 3 personas).",
-                        "Story 2 does not match the exact template."
-                    ],
-                    "fix_plan": {{
-                        "must_add": ["Add more stories to total 3–6", "Use at least 3 distinct personas"],
-                        "must_change": ["Rewrite Story 2 to match the exact template"],
-                        "must_remove": ["Remove headings or extra commentary"],
-                        "rewrite_rules": ["One story per line", "Exact template required", "No extra commentary"]
-                    }},
-                    "revised_example": "As a Customer Support Representative, I want ... so that ...",
-                    "instructions": "1) Add 1–3 more stories to reach 3–6 total. 2) Introduce at least 2 new personas. 3) Rewrite any non-template lines to match the exact format."
-                    }}
+                If score >= {self.min_acceptable_score}, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
                 """
 
             response = client.chat.completions.create(
@@ -391,7 +374,7 @@ class EvaluationAgent:
             print(f"Evaluator Agent Evaluation:\n{data}")
             final_evaluation = data
             print(" Step 3: Check if evaluation is positive")
-            if data.get("score", 0) >= MIN_ACCEPTABLE_SCORE:
+            if data.get("score", 0) >= self.min_acceptable_score:
                 print(f"✅ Accepted with score {data['score']}/10")
                 break
             else:

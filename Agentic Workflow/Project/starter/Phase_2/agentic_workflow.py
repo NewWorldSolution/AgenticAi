@@ -86,7 +86,7 @@ product_manager_evaluation_agent = EvaluationAgent(
 )
 # Program Manager - Knowledge Augmented Prompt Agent
 persona_program_manager = "You are a Program Manager, you are responsible for defining the features for a product."
-knowledge_program_manager = "Features of a product are defined by organizing similar user stories into cohesive groups."
+knowledge_program_manager = "Features of a product are defined by organizing similar user stories into cohesive groups. Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
 # Instantiate a program_manager_knowledge_agent using 'persona_program_manager' and 'knowledge_program_manager'
 # (This is a necessary step before TODO 8. Students should add the instantiation code here.)
 program_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -121,7 +121,7 @@ program_manager_evaluation_agent = EvaluationAgent(
 )
 # Development Engineer - Knowledge Augmented Prompt Agent
 persona_dev_engineer = "You are a Development Engineer, you are responsible for defining the development tasks for a product."
-knowledge_dev_engineer = "Development tasks are defined by identifying what needs to be built to implement each user story."
+knowledge_dev_engineer = "Development tasks are defined by identifying what needs to be built to implement each user story. Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
 # Instantiate a development_engineer_knowledge_agent using 'persona_dev_engineer' and 'knowledge_dev_engineer'
 # (This is a necessary step before TODO 9. Students should add the instantiation code here.)
 development_engineer_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -155,10 +155,11 @@ development_engineer_evaluation_agent = EvaluationAgent(
         "Acceptance Criteria: Specific requirements that must be met for completion (must not be blank)\n"
         "Estimated Effort: Time or complexity estimation\n"
         "Dependencies: Any tasks that must be completed first"
-        "Score must be at least 7 or <= 5 if structure is not followed."
+        "Score must be <= 5 if structure is not followed."
     ),
     worker_agent=development_engineer_knowledge_agent,
     max_interactions=10,
+    min_acceptable_score=7,
 )
 # Risk Manager - Knowledge Augmented Prompt Agent
 persona_risk_manager = (
@@ -203,10 +204,11 @@ risk_manager_evaluation_agent = EvaluationAgent(
         "Trigger/Early Warning: What signals the risk is emerging\n"
         "Status: Open/Mitigating/Closed\n"
         "Return ONLY risks in this structure (no extra commentary)."
-        "Score must be at least 7 or <= 5 if structure is not followed."
+        "Score must be <= 5 if structure is not followed."
     ),
     worker_agent=risk_manager_knowledge_agent,
     max_interactions=10,
+    min_acceptable_score=7,
 )
 # Routing Agent
 # TODO: 10 - Instantiate a routing_agent. You will need to define a list of agent dictionaries (routes) for Product Manager, Program Manager, and Development Engineer. Each dictionary should contain 'name', 'description', and 'func' (linking to a support function). Assign this list to the routing_agent's 'agents' attribute.
