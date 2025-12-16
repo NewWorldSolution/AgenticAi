@@ -5,9 +5,10 @@ from dotenv import load_dotenv
 # Load environment variables and initialize OpenAI client
 load_dotenv()
 client = OpenAI(
-    base_url="https://openai.vocareum.com/v1",
-    api_key= "voc-218204610159874433027768e4f638a44c26.78307440"
+    base_url="https://openai.vocareum.com/v1", api_key=os.getenv("OPENAI_API_KEY")
 )
+
+
 # --- Helper Function for API Calls ---
 def call_openai(system_prompt, user_prompt, model="gpt-3.5-turbo"):
     """Simple wrapper for OpenAI API calls."""
@@ -15,20 +16,21 @@ def call_openai(system_prompt, user_prompt, model="gpt-3.5-turbo"):
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+            {"role": "user", "content": user_prompt},
         ],
-        temperature=0
+        temperature=0,
     )
     return response.choices[0].message.content
 
 
 # --- Agents for Different Retail Tasks ---
 
+
 def product_researcher_agent(query):
     """Product researcher agent gathers product information."""
     system_prompt = """You are a product research agent for a retail company. Your task is to provide 
     structured information about products, market trends, and competitor pricing."""
-    
+
     user_prompt = f"Research this product thoroughly: {query}"
     return call_openai(system_prompt, user_prompt)
 
@@ -37,7 +39,7 @@ def customer_analyzer_agent(query):
     """Customer analyzer agent processes customer data and feedback."""
     system_prompt = """You are a customer analysis agent. Your task is to analyze customer feedback, 
     preferences, and purchasing patterns."""
-    
+
     user_prompt = f"Analyze customer behavior for: {query}"
     return call_openai(system_prompt, user_prompt)
 
@@ -47,20 +49,18 @@ def pricing_strategist_agent(query, product_data=None, customer_data=None):
     system_prompt = """You are a pricing strategist agent. Your task is to recommend optimal pricing 
     strategies based on product research and customer analysis."""
 
-    user_prompt = (
-        f"""Original Price query: {query}, Product Research Data: {product_data}, Customer Analysis Data: {customer_data}.
+    user_prompt = f"""Original Price query: {query}, Product Research Data: {product_data}, Customer Analysis Data: {customer_data}.
         Based on this information, suggest an optimal pricing strategy suggest an optimal price or price range, and explain your reasoning."""
-    )
     print("Pricing Strategist Agent working...")
     result = call_openai(system_prompt, user_prompt)
-    print("Pricing Strategist Agent completed. Response received.")     
+    print("Pricing Strategist Agent completed. Response received.")
     return result
 
 
 # --- Routing Agent with LLM-Based Task Determination ---
 def routing_agent(query, *args):
     """Routing agent that determines which agent to use based on the query."""
-    
+
     classification_system_prompt = """
     You are a helpful AI assistant that categorizes retail-related user queries. Based on the user's query, determine if it is primarily about:
     * "product research" (e.g., asking for product specs, trends, competitor prices)
@@ -69,7 +69,9 @@ def routing_agent(query, *args):
     Respond only with one of these exact phrases: "product research", "customer analysis", or "pricing strategy".
 """
     classification_user_prompt = f"Classify the following user query: {query}"
-    task_type = call_openai(classification_system_prompt, classification_user_prompt).strip()
+    task_type = call_openai(
+        classification_system_prompt, classification_user_prompt
+    ).strip()
     if task_type == "product research":
         print("--- Routing to Product Researcher Agent... ---")
         return product_researcher_agent(query)
@@ -77,33 +79,38 @@ def routing_agent(query, *args):
         print("--- Routing to Customer Analyzer Agent... ---")
         return customer_analyzer_agent(query)
     elif task_type == "pricing strategy":
-        print('Pricing strategy query identified. Gathering prerequisite information...')
+        print(
+            "Pricing strategy query identified. Gathering prerequisite information..."
+        )
         product_content_query = query
         customer_content_query = query
-        print('Calling Product Researcher Agent...')
+        print("Calling Product Researcher Agent...")
         product_info = product_researcher_agent(product_content_query)
-        print('Calling Customer Analyzer Agent...')
+        print("Calling Customer Analyzer Agent...")
         customer_info = customer_analyzer_agent(customer_content_query)
-        print('Calling Pricing Strategist Agent...')
+        print("Calling Pricing Strategist Agent...")
         return pricing_strategist_agent(query, product_info, customer_info)
     else:
         print(f"Could not determine appropriate agent for query: {query}")
-        return "Soory, I couldn't determine the appropriate agent to handle your request."
+        return (
+            "Soory, I couldn't determine the appropriate agent to handle your request."
+        )
+
+
 # --- Example Usage ---
 if __name__ == "__main__":
     # Example queries
     queries = [
         "What are the specifications and current market trends for wireless earbuds?",
         "What do customers think about our premium coffee brand?",
-        "What should be the optimal price for our new organic skincare line?"
+        "What should be the optimal price for our new organic skincare line?",
     ]
-    
+
     # Process each query
     for query in queries:
-        print(f"\n\nProcessing Query: \"{query}\"")
+        print(f'\n\nProcessing Query: "{query}"')
         print("-" * 30)
         result = routing_agent(query)
         print("\n--- ROUTING AGENT FINAL RESULT ---")
         print(result)
         print("=" * 30)
-     

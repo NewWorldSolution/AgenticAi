@@ -8,7 +8,7 @@ import json
 load_dotenv()
 client = OpenAI(
     base_url="https://openai.vocareum.com/v1",
-    api_key="voc-6097587160736433027768ae0cc3b0b5d4.62999036",
+    api_key=os.getenv("OPENAI_API_KEY"),
 )
 
 
