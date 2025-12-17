@@ -163,12 +163,13 @@ development_engineer_evaluation_agent = EvaluationAgent(
 )
 # Risk Manager - Knowledge Augmented Prompt Agent
 persona_risk_manager = (
-    "You are a Risk Manager. You identify delivery, technical, security, and operational risks "
-    "based strictly on the provided product specification. You propose mitigations."
+    "You are a Risk Manager. "
+    "You identify delivery, technical, security, and operational risks based strictly on the provided product specification. "
+    "You propose mitigations."
 )
 
 knowledge_risk_manager = (
-    "Return ONLY risks using this exact structure for EACH risk (no markdown):\n"
+    "Return risks using this exact structure for EACH risk (no markdown):\n"
     "Risk ID: <ID>\n"
     "Risk Title: <title>\n"
     "Description: <what could go wrong>\n"
@@ -177,8 +178,8 @@ knowledge_risk_manager = (
     "Mitigation: <concrete action>\n"
     "Owner: <role>\n"
     "Trigger/Early Warning: <signal>\n"
-    "Status: Open\n\n"
-    "Use ONLY the PRODUCT SPECIFICATION below.\n\n"
+    "Status: Open/Mitigating/Closed\n\n"
+    "Base primarily on PRODUCT SPECIFICATION; context may provide implementation details\n\n"
     f"{product_spec}"
 )
 risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -187,7 +188,8 @@ risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
     knowledge=knowledge_risk_manager,
 )
 persona_risk_manager_eval = (
-    "You are an evaluation agent that checks the answers of other worker agents. Base risks primarily on the product specification."
+    "You are an evaluation agent that checks the answers of other worker agents. "
+    "Base risks primarily on the product specification. "
     "Ignore irrelevant context if present."
 )
 risk_manager_evaluation_agent = EvaluationAgent(
@@ -203,9 +205,8 @@ risk_manager_evaluation_agent = EvaluationAgent(
         "Mitigation: Concrete actions to reduce likelihood/impact\n"
         "Owner: Role responsible\n"
         "Trigger/Early Warning: What signals the risk is emerging\n"
-        "Status: Open/Mitigating/Closed\n"
-        "Return ONLY risks in this structure (no extra commentary)."
-        "Dependencies: Any tasks that must be completed first\n"
+        "Status: Open/Mitigating/Closed\n\n"
+        "Return ONLY risks in this structure (no extra commentary).\n"
         "Score must be <= 5 if structure is not followed."
     ),
     worker_agent=risk_manager_knowledge_agent,

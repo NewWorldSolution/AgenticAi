@@ -335,6 +335,11 @@ class EvaluationAgent:
                 raw = raw.replace("```json", "").replace("```", "").strip()
                 try:
                     data = json.loads(raw)
+                    rev = data.get("revised_example", "")
+                    if rev is None:
+                        data["revised_example"] = ""
+                    elif not isinstance(rev, str):
+                        data["revised_example"] = json.dumps(rev, ensure_ascii=False)
                     break
                 except json.JSONDecodeError:
                     if eval_attempt == 0:
