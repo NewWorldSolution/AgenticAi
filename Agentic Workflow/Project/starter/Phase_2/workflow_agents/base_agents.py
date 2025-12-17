@@ -286,7 +286,8 @@ class EvaluationAgent:
         for i in range(
             self.max_interactions
         ):  # TODO: 2 - Set loop to iterate up to the maximum number of interactions:
-            print(f"\n--- Interaction {i+1} ---")
+            agent_name = self.persona.split(".")[0]
+            print(f"\n[{agent_name}] Iteration {i+1}/{self.max_interactions}")
             iterations_used += 1
             print(" Step 1: Worker agent generates a response to the prompt")
             print(f"Prompt:\n{prompt_to_evaluate}")
@@ -405,16 +406,16 @@ class EvaluationAgent:
                     f"It has been evaluated as incorrect.\n"
                     f"Make only these corrections, do not alter content validity: {instructions}"
                 )
-            passed = (
-                final_evaluation.get("score", 0) >= self.min_acceptable_score
-                if isinstance(final_evaluation, dict)
-                else False
-            )
-            score = (
-                final_evaluation.get("score", 0)
-                if isinstance(final_evaluation, dict)
-                else 0
-            )
+        passed = (
+            final_evaluation.get("score", 0) >= self.min_acceptable_score
+            if isinstance(final_evaluation, dict)
+            else False
+        )
+        score = (
+            final_evaluation.get("score", 0)
+            if isinstance(final_evaluation, dict)
+            else 0
+        )
         return {
             "final_response": final_response,
             "evaluation": final_evaluation,
@@ -433,6 +434,9 @@ class RoutingAgent:
         # TODO: 1 - Define an attribute to hold the agents, call it agents
         self.agents = agents
         # Precompute embeddings for each agent description once
+        self.last_selected_agent_name = None
+        self.last_selected_agent_score = None
+
         for agent in self.agents:
             agent["description_embedding"] = self.get_embedding(agent["description"])
 
@@ -473,8 +477,11 @@ class RoutingAgent:
                 best_score = similarity
                 best_agent = agent
         if best_agent is None:
+            self.last_selected_agent_name = None
+            self.last_selected_agent_score = None
             return "Sorry, no suitable agent could be selected."
-
+        self.last_selected_agent_name = best_agent["name"]
+        self.last_selected_agent_score = best_score
         print(f"[Router] Best agent: {best_agent['name']} (score={best_score:.3f})")
         return best_agent["func"](user_input)
 

@@ -187,7 +187,8 @@ risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
     knowledge=knowledge_risk_manager,
 )
 persona_risk_manager_eval = (
-    "You are an evaluation agent that checks the answers of other worker agents."
+    "You are an evaluation agent that checks the answers of other worker agents. Base risks primarily on the product specification."
+    "Ignore irrelevant context if present."
 )
 risk_manager_evaluation_agent = EvaluationAgent(
     openai_api_key=openai_api_key,
@@ -353,12 +354,14 @@ print("\nDefining workflow steps from the workflow prompt")
 workflow_steps = action_planning_agent.extract_steps_from_prompt(workflow_prompt)
 completed_steps = []
 workflow_results = []
+evaluation_log = []
 for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
     try:
         context = "\n\n".join(completed_steps)
         step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
         result = routing_agent.route(step_prompt)
+        agent_name = routing_agent.last_selected_agent_name
         workflow_results.append(
             {
                 "step": step,
@@ -371,7 +374,16 @@ for step in workflow_steps:
     except Exception as e:
         print(f"Error routing step: {e}")
         result = f"Error routing step: {e}"
-    completed_steps.append(result)
+    completed_steps.append(result["final_response"])
+    evaluation_log.append(
+        {
+            "agent": agent_name,
+            "passed": result["passed"],
+            "score": result["score"],
+            "iterations": result["iterations"],
+        }
+    )
+
     print(f"Step result: {result}")
 print("\n*** Workflow execution completed ***\n")
 print(f"Final workflow output: {completed_steps[-1]}")
