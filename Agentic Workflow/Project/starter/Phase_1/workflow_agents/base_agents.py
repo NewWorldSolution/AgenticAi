@@ -259,6 +259,7 @@ class EvaluationAgent:
         evaluation_criteria,
         worker_agent,
         max_interactions,
+        min_acceptable_score=6,
     ):
         # Initialize the EvaluationAgent with given attributes.
         # TODO: 1 - Declare class attributes here
@@ -267,6 +268,7 @@ class EvaluationAgent:
         self.evaluation_criteria = evaluation_criteria
         self.worker_agent = worker_agent
         self.max_interactions = max_interactions
+        self.min_acceptable_score = min_acceptable_score
 
     def respond(self, initial_prompt):
         # This method is a placeholder to comply with the agent interface.
@@ -284,7 +286,8 @@ class EvaluationAgent:
         for i in range(
             self.max_interactions
         ):  # TODO: 2 - Set loop to iterate up to the maximum number of interactions:
-            print(f"\n--- Interaction {i+1} ---")
+            agent_name = self.persona.split(".")[0]
+            print(f"\n[{agent_name}] Iteration {i+1}/{self.max_interactions}")
             iterations_used += 1
             print(" Step 1: Worker agent generates a response to the prompt")
             print(f"Prompt:\n{prompt_to_evaluate}")
@@ -294,7 +297,6 @@ class EvaluationAgent:
             print(f"Worker Agent Response:\n{response_from_worker}")
             final_response = response_from_worker
             print(" Step 2: Evaluator agent judges the response")
-            MIN_ACCEPTABLE_SCORE = 6
             eval_prompt = f"""
                 Evaluate the ANSWER against the CRITERIA.
 
@@ -313,25 +315,7 @@ class EvaluationAgent:
                     - rewrite_rules (list of strings)
                 - revised_example (string; provide ONE corrected example line that matches the required structure)
                 - instructions (string; MUST be a numbered list of concrete edit actions the worker should perform.
-                If score >= 6, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
-
-                Example of valid JSON response:
-                {{
-                    "score": 5,
-                    "issues": ["Story 2 missing 'so that' clause", "Only 2 personas used"],
-                    "fix_plan": {
-                        "must_add": ["At least 6 stories", "At least 3 personas"],
-                        "must_change": ["Rewrite Story 2 to include benefit clause", "Rewrite Story 4 to match template exactly"],
-                        "must_remove": ["Remove headings", "Remove bullet list intro sentence"],
-                        "rewrite_rules": [
-                        "One story per line",
-                        "Exact template required",
-                        "No extra commentary"
-                        ]
-                    },
-                    "revised_example": "As a ..., I want ... so that ...",
-                    "instructions": "1) ... 2) ... 3) ..."
-            }}
+                If score >= {self.min_acceptable_score}, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
                 """
 
             response = client.chat.completions.create(
@@ -345,32 +329,64 @@ class EvaluationAgent:
                 ],
                 temperature=0,
             )
-            raw = response.choices[0].message.content.strip()
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                # fallback: treat as failure and request reformat next iteration
-                data = {
-                    "score": 0,
-                    "issues": ["Evaluator returned invalid JSON."],
-                    "fix_plan": {
-                        "must_add": [],
-                        "must_change": [],
-                        "must_remove": [],
-                        "rewrite_rules": [],
-                    },
-                    "revised_example": "",
-                    "instructions": "Return ONLY valid JSON in the required format. No extra text.",
-                }
+            data = None
+            for eval_attempt in range(2):
+                raw = response.choices[0].message.content.strip()
+                raw = raw.replace("```json", "").replace("```", "").strip()
+                try:
+                    data = json.loads(raw)
+                    rev = data.get("revised_example", "")
+                    if rev is None:
+                        data["revised_example"] = ""
+                    elif not isinstance(rev, str):
+                        data["revised_example"] = json.dumps(rev, ensure_ascii=False)
+                    break
+                except json.JSONDecodeError:
+                    if eval_attempt == 0:
+                        response = client.chat.completions.create(
+                            model="gpt-3.5-turbo",
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": self.persona,
+                                },
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Your previous response was not valid JSON. "
+                                        "Return ONLY valid JSON that matches the required schema.\n\n"
+                                        f"{eval_prompt}\n\n"
+                                        f"INVALID RESPONSE:\n{raw}"
+                                    ),
+                                },
+                            ],
+                            temperature=0,
+                        )
+                    else:
+                        # fallback: treat as failure and request reformat next iteration
+                        data = {
+                            "score": 0,
+                            "issues": ["Evaluator returned invalid JSON."],
+                            "fix_plan": {
+                                "must_add": [],
+                                "must_change": [],
+                                "must_remove": [],
+                                "rewrite_rules": [],
+                            },
+                            "revised_example": "",
+                            "instructions": "Return ONLY valid JSON in the required format. No extra text.",
+                        }
 
             print(f"Evaluator Agent Evaluation:\n{data}")
             final_evaluation = data
             print(" Step 3: Check if evaluation is positive")
-            if data.get("score", 0) >= MIN_ACCEPTABLE_SCORE:
+            if data.get("score", 0) >= self.min_acceptable_score:
                 print(f"✅ Accepted with score {data['score']}/10")
                 break
             else:
                 instructions = data.get("instructions", "").strip()
+                if not instructions:
+                    instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
                 print(f"Instructions to fix:\n{instructions}")
 
                 #               print(" Step 4: Generate instructions to correct the response")
@@ -395,12 +411,24 @@ class EvaluationAgent:
                     f"It has been evaluated as incorrect.\n"
                     f"Make only these corrections, do not alter content validity: {instructions}"
                 )
+        passed = (
+            final_evaluation.get("score", 0) >= self.min_acceptable_score
+            if isinstance(final_evaluation, dict)
+            else False
+        )
+        score = (
+            final_evaluation.get("score", 0)
+            if isinstance(final_evaluation, dict)
+            else 0
+        )
         return {
             "final_response": final_response,
             "evaluation": final_evaluation,
             "iterations": iterations_used,
-            # TODO: 7 - Return a dictionary containing the final response, evaluation, and number of iterations
+            "passed": passed,
+            "score": score,
         }
+        # TODO: 7 - Return a dictionary containing the final response, evaluation, and number of iterations
 
 
 class RoutingAgent:
@@ -411,6 +439,9 @@ class RoutingAgent:
         # TODO: 1 - Define an attribute to hold the agents, call it agents
         self.agents = agents
         # Precompute embeddings for each agent description once
+        self.last_selected_agent_name = None
+        self.last_selected_agent_score = None
+
         for agent in self.agents:
             agent["description_embedding"] = self.get_embedding(agent["description"])
 
@@ -451,8 +482,11 @@ class RoutingAgent:
                 best_score = similarity
                 best_agent = agent
         if best_agent is None:
+            self.last_selected_agent_name = None
+            self.last_selected_agent_score = None
             return "Sorry, no suitable agent could be selected."
-
+        self.last_selected_agent_name = best_agent["name"]
+        self.last_selected_agent_score = best_score
         print(f"[Router] Best agent: {best_agent['name']} (score={best_score:.3f})")
         return best_agent["func"](user_input)
 
