@@ -110,7 +110,7 @@ program_manager_evaluation_agent = EvaluationAgent(
     openai_api_key=openai_api_key,
     persona=persona_program_manager_eval,
     evaluation_criteria=(
-        "The answer should be product features that follow the following structure:"
+        "The answer should be product features that follow the following structure:\n"
         "Feature Name: A clear, concise title that identifies the capability\n"
         "Description: A brief explanation of what the feature does and its purpose\n"
         "Key Functionality: The specific capabilities or actions the feature provides\n"
@@ -154,7 +154,7 @@ development_engineer_evaluation_agent = EvaluationAgent(
         "Description: Detailed explanation of the technical work required (must not be blank)\n"
         "Acceptance Criteria: Specific requirements that must be met for completion (must not be blank)\n"
         "Estimated Effort: Time or complexity estimation\n"
-        "Dependencies: Any tasks that must be completed first"
+        "Dependencies: Any tasks that must be completed first\n"
         "Score must be <= 5 if structure is not followed."
     ),
     worker_agent=development_engineer_knowledge_agent,
@@ -204,6 +204,7 @@ risk_manager_evaluation_agent = EvaluationAgent(
         "Trigger/Early Warning: What signals the risk is emerging\n"
         "Status: Open/Mitigating/Closed\n"
         "Return ONLY risks in this structure (no extra commentary)."
+        "Dependencies: Any tasks that must be completed first\n"
         "Score must be <= 5 if structure is not followed."
     ),
     worker_agent=risk_manager_knowledge_agent,
@@ -263,28 +264,64 @@ def product_manager_support_function(query):
     """Support function for the Product Manager agent."""
     print("PM team working...")
     result = product_manager_evaluation_agent.evaluate(query)
-    return result["final_response"]
+    role = "PM"
+    if result["passed"]:
+        print(
+            f"\n[{role}] ✅ PASSED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    else:
+        print(
+            f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    return result
 
 
 def program_manager_support_function(query):
     """Support function for the Program Manager agent."""
     print("PgM team working...")
     result = program_manager_evaluation_agent.evaluate(query)
-    return result["final_response"]
+    role = "PgM"
+    if result["passed"]:
+        print(
+            f"\n[{role}] ✅ PASSED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    else:
+        print(
+            f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    return result
 
 
 def development_engineer_support_function(query):
     """Support function for the Development Engineer agent."""
     print("Dev team working...")
     result = development_engineer_evaluation_agent.evaluate(query)
-    return result["final_response"]
+    role = "Dev"
+    if result["passed"]:
+        print(
+            f"\n[{role}] ✅ PASSED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    else:
+        print(
+            f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    return result
 
 
 def risk_manager_support_function(query):
     """Support function for the Risk Manager agent."""
     print("Risk Management team working...")
     result = risk_manager_evaluation_agent.evaluate(query)
-    return result["final_response"]
+    role = "RiskMgr"
+    if result["passed"]:
+        print(
+            f"\n[{role}] ✅ PASSED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    else:
+        print(
+            f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
+        )
+    return result
 
 
 # Run the workflow
@@ -315,12 +352,22 @@ print("\nDefining workflow steps from the workflow prompt")
 
 workflow_steps = action_planning_agent.extract_steps_from_prompt(workflow_prompt)
 completed_steps = []
+workflow_results = []
 for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
     try:
         context = "\n\n".join(completed_steps)
         step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
         result = routing_agent.route(step_prompt)
+        workflow_results.append(
+            {
+                "step": step,
+                "passed": result.get("passed", False),
+                "score": result.get("score", 0),
+                "iterations": result.get("iterations", 0),
+                "final_response": result.get("final_response", result),
+            }
+        )
     except Exception as e:
         print(f"Error routing step: {e}")
         result = f"Error routing step: {e}"
@@ -328,3 +375,14 @@ for step in workflow_steps:
     print(f"Step result: {result}")
 print("\n*** Workflow execution completed ***\n")
 print(f"Final workflow output: {completed_steps[-1]}")
+
+print("\n=== WORKFLOW SUMMARY ===")
+for i, r in enumerate(workflow_results, 1):
+    status = "✅ PASSED" if r["passed"] else "❌ FAILED"
+    print(
+        f"{i}) {r['step']} -> {status} | iterations={r['iterations']} | score={r['score']}/10"
+    )
+
+print("\n=== FINAL ARTIFACTS ===")
+for i, r in enumerate(workflow_results, 1):
+    print(f"\n--- Step {i}: {r['step']} ---\n{r['final_response']}")

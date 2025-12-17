@@ -379,6 +379,8 @@ class EvaluationAgent:
                 break
             else:
                 instructions = data.get("instructions", "").strip()
+                if not instructions:
+                    instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
                 print(f"Instructions to fix:\n{instructions}")
 
                 #               print(" Step 4: Generate instructions to correct the response")
@@ -403,12 +405,24 @@ class EvaluationAgent:
                     f"It has been evaluated as incorrect.\n"
                     f"Make only these corrections, do not alter content validity: {instructions}"
                 )
+            passed = (
+                final_evaluation.get("score", 0) >= self.min_acceptable_score
+                if isinstance(final_evaluation, dict)
+                else False
+            )
+            score = (
+                final_evaluation.get("score", 0)
+                if isinstance(final_evaluation, dict)
+                else 0
+            )
         return {
             "final_response": final_response,
             "evaluation": final_evaluation,
             "iterations": iterations_used,
-            # TODO: 7 - Return a dictionary containing the final response, evaluation, and number of iterations
+            "passed": passed,
+            "score": score,
         }
+        # TODO: 7 - Return a dictionary containing the final response, evaluation, and number of iterations
 
 
 class RoutingAgent:
