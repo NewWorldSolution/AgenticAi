@@ -519,9 +519,8 @@ class ActionPlanningAgent:
             ],
             temperature=0,
         )
-        response_text = response.choices[
-            0
-        ].message.content  # TODO: 4 - Extract the response text from the OpenAI API response
+        response_text = response.choices[0].message.content
+        # TODO: 4 - Extract the response text from the OpenAI API response
 
         # TODO: 5 - Clean and format the extracted steps by removing empty lines and unwanted text
         steps = [line.strip() for line in response_text.split("\n") if line.strip()]
