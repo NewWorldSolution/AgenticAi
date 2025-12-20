@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 from openai import OpenAI
+import os
 from lib.messages import (
     AnyMessage,
     AIMessage,
@@ -16,14 +17,17 @@ class LLM:
         model: str = "gpt-4o-mini",
         temperature: float = 0.0,
         tools: Optional[List[Tool]] = None,
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
         self.model = model
         self.temperature = temperature
-        self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
-        self.tools: Dict[str, Tool] = {
-            tool.name: tool for tool in (tools or [])
-        }
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        base_url = base_url or os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL")
+        self.client = (
+            OpenAI(api_key=api_key, base_url=base_url) if api_key else OpenAI()
+        )
+        self.tools: Dict[str, Tool] = {tool.name: tool for tool in (tools or [])}
 
     def register_tool(self, tool: Tool):
         self.tools[tool.name] = tool
@@ -51,9 +55,11 @@ class LLM:
         else:
             raise ValueError(f"Invalid input type {type(input)}.")
 
-    def invoke(self, 
-               input: str | BaseMessage | List[BaseMessage],
-               response_format: BaseModel = None,) -> AIMessage:
+    def invoke(
+        self,
+        input: str | BaseMessage | List[BaseMessage],
+        response_format: BaseModel = None,
+    ) -> AIMessage:
         messages = self._convert_input(input)
         payload = self._build_payload(messages)
         if response_format:
@@ -64,7 +70,4 @@ class LLM:
         choice = response.choices[0]
         message = choice.message
 
-        return AIMessage(
-            content=message.content,
-            tool_calls=message.tool_calls
-        )
+        return AIMessage(content=message.content, tool_calls=message.tool_calls)

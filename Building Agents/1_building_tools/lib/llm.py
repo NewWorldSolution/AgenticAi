@@ -1,5 +1,6 @@
 from typing import List, Optional, Dict, Any
 from openai import OpenAI
+from pydantic import BaseModel
 import os
 from lib.messages import (
     AnyMessage,
