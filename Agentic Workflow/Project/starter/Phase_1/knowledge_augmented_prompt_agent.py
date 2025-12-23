@@ -22,3 +22,7 @@ knowledge_agent = KnowledgeAugmentedPromptAgent(
 )
 # TODO: 3 - Write a print statement that demonstrates the agent using the provided knowledge rather than its own inherent knowledge.
 print(knowledge_agent.respond(prompt))
+
+print(
+    "The agent used the knowledge provided to it, stating that the capital of France is London instead of Paris. Using provided knowledge rather than models general knowledge.\n"
+)

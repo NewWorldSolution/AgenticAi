@@ -22,8 +22,8 @@ print(augmented_agent_response)
 # TODO: 4 - Add a comment explaining:
 # - What knowledge the agent likely used to answer the prompt.
 # - How the system prompt specifying the persona affected the agent's response.
-"""
-The agent likely used its pre-trained general knowledge about world capitals to answer the prompt.
-The system prompt defining the persona caused the response to adopt a professor-like tone and
-begin with "Dear students," as instructed.
-"""
+print(
+    "The agent likely used its pre-trained general knowledge about world capitals to answer the prompt. \n"
+    "The system prompt defining the persona caused the response to adopt a professor-like tone and \n"
+    'begin with "Dear students," as instructed.'
+)
