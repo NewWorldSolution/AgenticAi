@@ -165,7 +165,7 @@ class RAGKnowledgePromptAgent:
         list: List of dictionaries containing chunk metadata.
         """
         separator = "\n"
-        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"[ \t]+", " ", text).strip()
 
         if len(text) <= self.chunk_size:
             return [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]

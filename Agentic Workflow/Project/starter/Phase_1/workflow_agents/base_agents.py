@@ -136,7 +136,7 @@ class RAGKnowledgePromptAgent:
         """
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.embeddings.create(
-            model="text-embedding-3-large", input=text, encoding_format="float"
+            model="text-embedding-3-small", input=text, encoding_format="float"
         )
         return response.data[0].embedding
 
@@ -165,38 +165,50 @@ class RAGKnowledgePromptAgent:
         list: List of dictionaries containing chunk metadata.
         """
         separator = "\n"
-        text = re.sub(r"\s+", " ", text).strip()
+        text = re.sub(r"[ \t]+", " ", text).strip()
 
         if len(text) <= self.chunk_size:
-            return [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]
+            chunks = [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]
+            with open(
+                f"chunks-{self.unique_filename}", "w", newline="", encoding="utf-8"
+            ) as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=["text", "chunk_size"])
+                writer.writeheader()
+                writer.writerow({"text": text, "chunk_size": len(text)})
+            return chunks
+
+        out_path = f"chunks-{self.unique_filename}"
 
         chunks, start, chunk_id = [], 0, 0
-
-        while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            if separator in text[start:end]:
-                end = start + text[start:end].rindex(separator) + len(separator)
-
-            chunks.append(
-                {
-                    "chunk_id": chunk_id,
-                    "text": text[start:end],
-                    "chunk_size": end - start,
-                    "start_char": start,
-                    "end_char": end,
-                }
-            )
-
-            start = end - self.chunk_overlap
-            chunk_id += 1
-
-        with open(
-            f"chunks-{self.unique_filename}", "w", newline="", encoding="utf-8"
-        ) as csvfile:
+        with open(out_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=["text", "chunk_size"])
             writer.writeheader()
-            for chunk in chunks:
-                writer.writerow({k: chunk[k] for k in ["text", "chunk_size"]})
+
+            while start < len(text):
+                end = min(start + self.chunk_size, len(text))
+                if separator in text[start:end]:
+                    cut_end = start + text[start:end].rindex(separator) + len(separator)
+                    if cut_end - start >= 50:
+                        end = cut_end
+
+                if end <= start:
+                    end = min(start + self.chunk_size, len(text))
+
+                chunk_text = text[start:end]
+                chunk_len = len(chunk_text)
+                chunks.append(
+                    {"chunk_id": chunk_id, "text": chunk_text, "chunk_size": chunk_len}
+                )
+                writer.writerow({"text": chunk_text, "chunk_size": chunk_len})
+
+                chunk_id += 1
+                if end >= len(text):
+                    break
+                next_start = end - self.chunk_overlap
+                if next_start <= start:
+                    next_start = end
+
+                start = next_start
 
         return chunks
 
@@ -207,10 +219,22 @@ class RAGKnowledgePromptAgent:
         Returns:
         DataFrame: DataFrame containing text chunks and their embeddings.
         """
-        df = pd.read_csv(f"chunks-{self.unique_filename}", encoding="utf-8")
-        df["embeddings"] = df["text"].apply(self.get_embedding)
-        df.to_csv(f"embeddings-{self.unique_filename}", encoding="utf-8", index=False)
-        return df
+        in_path = f"chunks-{self.unique_filename}"
+        out_path = f"embeddings-{self.unique_filename}".replace(".csv", ".jsonl")
+
+        with open(in_path, "r", encoding="utf-8") as f_in, open(
+            out_path, "w", encoding="utf-8"
+        ) as f_out:
+            reader = csv.DictReader(f_in)
+            for row in reader:
+                text = row["text"]
+                emb = self.get_embedding(text)  # list[float]
+                f_out.write(
+                    json.dumps({"text": text, "embedding": emb}, ensure_ascii=False)
+                    + "\n"
+                )
+
+        return out_path
 
     def find_prompt_in_knowledge(self, prompt):
         """
@@ -222,14 +246,23 @@ class RAGKnowledgePromptAgent:
         Returns:
         str: Response derived from the most similar chunk in knowledge.
         """
-        prompt_embedding = self.get_embedding(prompt)
-        df = pd.read_csv(f"embeddings-{self.unique_filename}", encoding="utf-8")
-        df["embeddings"] = df["embeddings"].apply(lambda x: np.array(eval(x)))
-        df["similarity"] = df["embeddings"].apply(
-            lambda emb: self.calculate_similarity(prompt_embedding, emb)
-        )
+        prompt_embedding = np.array(self.get_embedding(prompt), dtype=np.float32)
 
-        best_chunk = df.loc[df["similarity"].idxmax(), "text"]
+        emb_path = f"embeddings-{self.unique_filename}".replace(".csv", ".jsonl")
+        best_text = None
+        best_score = -1.0
+
+        with open(emb_path, "r", encoding="utf-8") as f:
+            for line in f:
+                rec = json.loads(line)
+                emb = np.array(rec["embedding"], dtype=np.float32)
+                score = float(
+                    np.dot(prompt_embedding, emb)
+                    / (np.linalg.norm(prompt_embedding) * np.linalg.norm(emb))
+                )
+                if score > best_score:
+                    best_score = score
+                    best_text = rec["text"]
 
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.chat.completions.create(
@@ -241,7 +274,7 @@ class RAGKnowledgePromptAgent:
                 },
                 {
                     "role": "user",
-                    "content": f"Answer based only on this information: {best_chunk}. Prompt: {prompt}",
+                    "content": f"Answer based only on this information: {best_text}. Prompt: {prompt}",
                 },
             ],
             temperature=0,
@@ -277,8 +310,14 @@ class EvaluationAgent:
     def evaluate(self, initial_prompt):
         # This method manages interactions between agents to achieve a solution.
         client = OpenAI(api_key=self.openai_api_key, base_url=BASE_URL)
-        prompt_to_evaluate = initial_prompt
-
+        if isinstance(initial_prompt, dict):
+            original_prompt = initial_prompt.get("prompt", "")
+            prompt_to_evaluate = original_prompt
+            provided_worker_response = initial_prompt.get("worker_response", None)
+        else:
+            original_prompt = initial_prompt
+            prompt_to_evaluate = initial_prompt
+            provided_worker_response = None
         final_response = ""
         final_evaluation = ""
         iterations_used = 0
@@ -291,9 +330,13 @@ class EvaluationAgent:
             iterations_used += 1
             print(" Step 1: Worker agent generates a response to the prompt")
             print(f"Prompt:\n{prompt_to_evaluate}")
-            response_from_worker = self.worker_agent.respond(
-                prompt_to_evaluate
-            )  # TODO: 3 - Obtain a response from the worker agent
+            if provided_worker_response is not None:
+                response_from_worker = provided_worker_response
+                provided_worker_response = None
+            else:
+                response_from_worker = self.worker_agent.respond(
+                    prompt_to_evaluate
+                )  # TODO: 3 - Obtain a response from the worker agent
             print(f"Worker Agent Response:\n{response_from_worker}")
             final_response = response_from_worker
             print(" Step 2: Evaluator agent judges the response")
@@ -383,34 +426,34 @@ class EvaluationAgent:
             if data.get("score", 0) >= self.min_acceptable_score:
                 print(f"✅ Accepted with score {data['score']}/10")
                 break
-            else:
-                instructions = data.get("instructions", "").strip()
-                if not instructions:
-                    instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
-                print(f"Instructions to fix:\n{instructions}")
 
-                #               print(" Step 4: Generate instructions to correct the response")
-                #              instruction_prompt = (
-                #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
-                #                    f"The original prompt was: {initial_prompt}\n"
-                #                    f"The response to that prompt was: {response_from_worker}\n"
-                #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
-                #                    f"Make only these corrections, do not alter content validity: {instructions}"
-                #                    f"Return instructions only."
-                #                )
-                #                response = client.chat.completions.create(
-                #                    model="gpt-3.5-turbo",
-                #                    messages=[{"role": "user", "content": instruction_prompt}],
-                #                    temperature=0,
-                #                )
+            instructions = data.get("instructions", "").strip()
+            if not instructions:
+                instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
+            print(f"Instructions to fix:\n{instructions}")
 
-                print(" Step 5: Send feedback to worker agent for refinement")
-                prompt_to_evaluate = (
-                    f"The original prompt was: {initial_prompt}\n"
-                    f"The response to that prompt was: {response_from_worker}\n"
-                    f"It has been evaluated as incorrect.\n"
-                    f"Make only these corrections, do not alter content validity: {instructions}"
-                )
+            #               print(" Step 4: Generate instructions to correct the response")
+            #              instruction_prompt = (
+            #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
+            #                    f"The original prompt was: {initial_prompt}\n"
+            #                    f"The response to that prompt was: {response_from_worker}\n"
+            #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
+            #                    f"Make only these corrections, do not alter content validity: {instructions}"
+            #                    f"Return instructions only."
+            #                )
+            #                response = client.chat.completions.create(
+            #                    model="gpt-3.5-turbo",
+            #                    messages=[{"role": "user", "content": instruction_prompt}],
+            #                    temperature=0,
+            #                )
+
+            print(" Step 5: Send feedback to worker agent for refinement")
+            prompt_to_evaluate = (
+                f"ORIGINAL PROMPT:\n{original_prompt}\n\n"
+                f"PREVIOUS ANSWER:\n{response_from_worker}\n\n"
+                f"REQUIRED FIXES (follow exactly):\n{instructions}\n\n"
+                f"Now rewrite the answer so it fully satisfies the CRITERIA."
+            )
         passed = (
             final_evaluation.get("score", 0) >= self.min_acceptable_score
             if isinstance(final_evaluation, dict)
@@ -519,9 +562,8 @@ class ActionPlanningAgent:
             ],
             temperature=0,
         )
-        response_text = response.choices[
-            0
-        ].message.content  # TODO: 4 - Extract the response text from the OpenAI API response
+        response_text = response.choices[0].message.content
+        # TODO: 4 - Extract the response text from the OpenAI API response
 
         # TODO: 5 - Clean and format the extracted steps by removing empty lines and unwanted text
         steps = [line.strip() for line in response_text.split("\n") if line.strip()]
