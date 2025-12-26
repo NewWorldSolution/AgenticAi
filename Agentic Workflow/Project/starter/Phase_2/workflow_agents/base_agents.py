@@ -277,8 +277,14 @@ class EvaluationAgent:
     def evaluate(self, initial_prompt):
         # This method manages interactions between agents to achieve a solution.
         client = OpenAI(api_key=self.openai_api_key, base_url=BASE_URL)
-        prompt_to_evaluate = initial_prompt
-
+        if isinstance(initial_prompt, dict):
+            original_prompt = initial_prompt.get("prompt", "")
+            prompt_to_evaluate = original_prompt
+            provided_worker_response = initial_prompt.get("worker_response", None)
+        else:
+            original_prompt = initial_prompt
+            prompt_to_evaluate = initial_prompt
+            provided_worker_response = None
         final_response = ""
         final_evaluation = ""
         iterations_used = 0
@@ -291,9 +297,13 @@ class EvaluationAgent:
             iterations_used += 1
             print(" Step 1: Worker agent generates a response to the prompt")
             print(f"Prompt:\n{prompt_to_evaluate}")
-            response_from_worker = self.worker_agent.respond(
-                prompt_to_evaluate
-            )  # TODO: 3 - Obtain a response from the worker agent
+            if provided_worker_response is not None:
+                response_from_worker = provided_worker_response
+                provided_worker_response = None
+            else:
+                response_from_worker = self.worker_agent.respond(
+                    prompt_to_evaluate
+                )  # TODO: 3 - Obtain a response from the worker agent
             print(f"Worker Agent Response:\n{response_from_worker}")
             final_response = response_from_worker
             print(" Step 2: Evaluator agent judges the response")
@@ -383,34 +393,34 @@ class EvaluationAgent:
             if data.get("score", 0) >= self.min_acceptable_score:
                 print(f"✅ Accepted with score {data['score']}/10")
                 break
-            else:
-                instructions = data.get("instructions", "").strip()
-                if not instructions:
-                    instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
-                print(f"Instructions to fix:\n{instructions}")
 
-                #               print(" Step 4: Generate instructions to correct the response")
-                #              instruction_prompt = (
-                #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
-                #                    f"The original prompt was: {initial_prompt}\n"
-                #                    f"The response to that prompt was: {response_from_worker}\n"
-                #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
-                #                    f"Make only these corrections, do not alter content validity: {instructions}"
-                #                    f"Return instructions only."
-                #                )
-                #                response = client.chat.completions.create(
-                #                    model="gpt-3.5-turbo",
-                #                    messages=[{"role": "user", "content": instruction_prompt}],
-                #                    temperature=0,
-                #                )
+            instructions = data.get("instructions", "").strip()
+            if not instructions:
+                instructions = "Rewrite the answer to match the CRITERIA exactly. Follow the required structure strictly."
+            print(f"Instructions to fix:\n{instructions}")
 
-                print(" Step 5: Send feedback to worker agent for refinement")
-                prompt_to_evaluate = (
-                    f"The original prompt was: {initial_prompt}\n"
-                    f"The response to that prompt was: {response_from_worker}\n"
-                    f"It has been evaluated as incorrect.\n"
-                    f"Make only these corrections, do not alter content validity: {instructions}"
-                )
+            #               print(" Step 4: Generate instructions to correct the response")
+            #              instruction_prompt = (
+            #                    f"Evaluation criteria:\n{self.evaluation_criteria}\n\n"
+            #                    f"The original prompt was: {initial_prompt}\n"
+            #                    f"The response to that prompt was: {response_from_worker}\n"
+            #                    f"It has been evaluated as insufficient (score {data.get('score', 0)}/10).\n"
+            #                    f"Make only these corrections, do not alter content validity: {instructions}"
+            #                    f"Return instructions only."
+            #                )
+            #                response = client.chat.completions.create(
+            #                    model="gpt-3.5-turbo",
+            #                    messages=[{"role": "user", "content": instruction_prompt}],
+            #                    temperature=0,
+            #                )
+
+            print(" Step 5: Send feedback to worker agent for refinement")
+            prompt_to_evaluate = (
+                f"ORIGINAL PROMPT:\n{original_prompt}\n\n"
+                f"PREVIOUS ANSWER:\n{response_from_worker}\n\n"
+                f"REQUIRED FIXES (follow exactly):\n{instructions}\n\n"
+                f"Now rewrite the answer so it fully satisfies the CRITERIA."
+            )
         passed = (
             final_evaluation.get("score", 0) >= self.min_acceptable_score
             if isinstance(final_evaluation, dict)
