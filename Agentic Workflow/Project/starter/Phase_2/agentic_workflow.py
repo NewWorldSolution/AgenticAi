@@ -67,7 +67,20 @@ product_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
 product_manager_evaluation_agent = EvaluationAgent(
     openai_api_key=openai_api_key,
     persona="You are an evaluation agent that checks the answers of other worker agents",
-    evaluation_criteria="The answer should be stories that follow the following structure: As a [type of user], I want [an action or feature] so that [benefit/value].",
+    evaluation_criteria="""
+    The output must be ONLY user stories.
+    Rules:
+    1) Each line must match exactly:
+    "As a [type of user], I want [action/feature] so that [benefit/value]."
+    2) Provide between 3 and 6 high-quality user stories.
+    3) Each story must represent a distinct core capability from the product specification.
+    4) Use at least 3 distinct personas.
+    5) Do not create filler or repetitive stories to reach a count.
+    6) No feature lists, no task lists, no headings, no extra commentary.
+    7) Stories must be consistent with the product specification.
+
+    A score of 6 or higher indicates the output is sufficient and should be accepted.
+    """,
     worker_agent=product_manager_knowledge_agent,
     max_interactions=10,
 )
@@ -83,7 +96,7 @@ program_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
 )
 # Program Manager - Evaluation Agent
 persona_program_manager_eval = (
-    "You are an evaluation agent that checks the answers of other worker agents"
+    "You are an evaluation agent that checks the answers of other worker agents."
 )
 
 # TODO: 8 - Instantiate a program_manager_evaluation_agent using 'persona_program_manager_eval' and the evaluation criteria below.
@@ -222,8 +235,10 @@ routing_agent = RoutingAgent(
         {
             "name": "development engineer agent",
             "description": (
-                "Create detailed engineering tasks for each user story for the development team. "
-                "Outputs tasks with Task ID, Task Title, Related User Story, Description, Acceptance Criteria, Estimated Effort, Dependencies."
+                "Responsible for defining detailed engineering and development tasks only. "
+                "Breaks approved user stories or features into implementable technical tasks. "
+                "Includes task IDs, acceptance criteria, effort estimates, and dependencies. "
+                "Does not define user stories or product features."
             ),
             "func": lambda x: development_engineer_support_function(x),
         },
@@ -250,12 +265,7 @@ routing_agent = RoutingAgent(
 def product_manager_support_function(query):
     """Support function for the Product Manager agent."""
     print("PM team working...")
-    response = product_manager_knowledge_agent.respond(query)
-    routing_agent.last_evaluation_result = {}
-    result = product_manager_evaluation_agent.evaluate(response)
-
-    routing_agent.last_evaluation_result = result
-
+    result = product_manager_evaluation_agent.evaluate(query)
     role = "PM"
     if result["passed"]:
         print(
@@ -265,16 +275,13 @@ def product_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result["final_response"]
+    return result
 
 
 def program_manager_support_function(query):
     """Support function for the Program Manager agent."""
     print("PgM team working...")
-    response = program_manager_knowledge_agent.respond(query)
-    routing_agent.last_evaluation_result = {}
-    result = program_manager_evaluation_agent.evaluate(response)
-    routing_agent.last_evaluation_result = result
+    result = program_manager_evaluation_agent.evaluate(query)
     role = "PgM"
     if result["passed"]:
         print(
@@ -284,17 +291,13 @@ def program_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-
-    return result["final_response"]
+    return result
 
 
 def development_engineer_support_function(query):
     """Support function for the Development Engineer agent."""
     print("Dev team working...")
-    response = development_engineer_knowledge_agent.respond(query)
-    routing_agent.last_evaluation_result = {}
-    result = development_engineer_evaluation_agent.evaluate(response)
-    routing_agent.last_evaluation_result = result
+    result = development_engineer_evaluation_agent.evaluate(query)
     role = "Dev"
     if result["passed"]:
         print(
@@ -304,16 +307,13 @@ def development_engineer_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result["final_response"]
+    return result
 
 
 def risk_manager_support_function(query):
     """Support function for the Risk Manager agent."""
     print("Risk Management team working...")
-    response = risk_manager_knowledge_agent.respond(query)
-    routing_agent.last_evaluation_result = {}
-    result = risk_manager_evaluation_agent.evaluate(response)
-    routing_agent.last_evaluation_result = result
+    result = risk_manager_evaluation_agent.evaluate(query)
     role = "RiskMgr"
     if result["passed"]:
         print(
@@ -323,7 +323,7 @@ def risk_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result["final_response"]
+    return result
 
 
 # Run the workflow
@@ -335,7 +335,7 @@ workflow_prompt = (
     "Using the product specification, create a development plan by doing these steps:\n"
     "1) Generate user stories.\n"
     "2) Group them into product features.\n"
-    "3) Create detailed engineering tasks for each story for development team.\n"
+    "3) Create detailed engineering tasks for each story.\n"
     "4) Generate a risk assessment for the project with mitigations.\n"
     "Return only the plan steps as a numbered list."
 )
@@ -358,56 +358,34 @@ workflow_results = []
 evaluation_log = []
 for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
-    agent_name = None
     try:
         context = "\n\n".join(completed_steps)
         step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
-
         result = routing_agent.route(step_prompt)
         agent_name = routing_agent.last_selected_agent_name
-
-        meta = getattr(routing_agent, "last_evaluation_result", {}) or {}
-
-        completed_steps.append(result)
         workflow_results.append(
             {
                 "step": step,
-                "agent": agent_name,
-                "passed": meta.get("passed", False),
-                "score": meta.get("score", 0),
-                "iterations": meta.get("iterations", 0),
-                "final_response": result,
+                "passed": result.get("passed", False),
+                "score": result.get("score", 0),
+                "iterations": result.get("iterations", 0),
+                "final_response": result.get("final_response", result),
             }
         )
-
-        evaluation_log.append(
-            {
-                "agent": agent_name,
-                "passed": meta.get("passed", False),
-                "score": meta.get("score", 0),
-                "iterations": meta.get("iterations", 0),
-            }
-        )
-        print(f"Step result: {result}")
     except Exception as e:
         print(f"Error routing step: {e}")
-        error_text = f"Error routing step: {e}"
-        completed_steps.append(error_text)
-        workflow_results.append(
-            {
-                "step": step,
-                "agent": agent_name,
-                "passed": False,
-                "score": 0,
-                "iterations": 0,
-                "final_response": error_text,
-            }
-        )
-        evaluation_log.append(
-            {"agent": agent_name, "passed": False, "score": 0, "iterations": 0}
-        )
+        result = f"Error routing step: {e}"
+    completed_steps.append(result["final_response"])
+    evaluation_log.append(
+        {
+            "agent": agent_name,
+            "passed": result["passed"],
+            "score": result["score"],
+            "iterations": result["iterations"],
+        }
+    )
 
-
+    print(f"Step result: {result}")
 print("\n*** Workflow execution completed ***\n")
 print(f"Final workflow output: {completed_steps[-1]}")
 
