@@ -136,7 +136,7 @@ class RAGKnowledgePromptAgent:
         """
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.embeddings.create(
-            model="text-embedding-3-large", input=text, encoding_format="float"
+            model="text-embedding-3-small", input=text, encoding_format="float"
         )
         return response.data[0].embedding
 
@@ -168,35 +168,47 @@ class RAGKnowledgePromptAgent:
         text = re.sub(r"[ \t]+", " ", text).strip()
 
         if len(text) <= self.chunk_size:
-            return [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]
+            chunks = [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]
+            with open(
+                f"chunks-{self.unique_filename}", "w", newline="", encoding="utf-8"
+            ) as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=["text", "chunk_size"])
+                writer.writeheader()
+                writer.writerow({"text": text, "chunk_size": len(text)})
+            return chunks
+
+        out_path = f"chunks-{self.unique_filename}"
 
         chunks, start, chunk_id = [], 0, 0
-
-        while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            if separator in text[start:end]:
-                end = start + text[start:end].rindex(separator) + len(separator)
-
-            chunks.append(
-                {
-                    "chunk_id": chunk_id,
-                    "text": text[start:end],
-                    "chunk_size": end - start,
-                    "start_char": start,
-                    "end_char": end,
-                }
-            )
-
-            start = end - self.chunk_overlap
-            chunk_id += 1
-
-        with open(
-            f"chunks-{self.unique_filename}", "w", newline="", encoding="utf-8"
-        ) as csvfile:
+        with open(out_path, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=["text", "chunk_size"])
             writer.writeheader()
-            for chunk in chunks:
-                writer.writerow({k: chunk[k] for k in ["text", "chunk_size"]})
+
+            while start < len(text):
+                end = min(start + self.chunk_size, len(text))
+                if separator in text[start:end]:
+                    cut_end = start + text[start:end].rindex(separator) + len(separator)
+                    if cut_end - start >= 50:
+                        end = cut_end
+
+                if end <= start:
+                    end = min(start + self.chunk_size, len(text))
+
+                chunk_text = text[start:end]
+                chunk_len = len(chunk_text)
+                chunks.append(
+                    {"chunk_id": chunk_id, "text": chunk_text, "chunk_size": chunk_len}
+                )
+                writer.writerow({"text": chunk_text, "chunk_size": chunk_len})
+
+                chunk_id += 1
+                if end >= len(text):
+                    break
+                next_start = end - self.chunk_overlap
+                if next_start <= start:
+                    next_start = end
+
+                start = next_start
 
         return chunks
 
@@ -207,10 +219,22 @@ class RAGKnowledgePromptAgent:
         Returns:
         DataFrame: DataFrame containing text chunks and their embeddings.
         """
-        df = pd.read_csv(f"chunks-{self.unique_filename}", encoding="utf-8")
-        df["embeddings"] = df["text"].apply(self.get_embedding)
-        df.to_csv(f"embeddings-{self.unique_filename}", encoding="utf-8", index=False)
-        return df
+        in_path = f"chunks-{self.unique_filename}"
+        out_path = f"embeddings-{self.unique_filename}".replace(".csv", ".jsonl")
+
+        with open(in_path, "r", encoding="utf-8") as f_in, open(
+            out_path, "w", encoding="utf-8"
+        ) as f_out:
+            reader = csv.DictReader(f_in)
+            for row in reader:
+                text = row["text"]
+                emb = self.get_embedding(text)  # list[float]
+                f_out.write(
+                    json.dumps({"text": text, "embedding": emb}, ensure_ascii=False)
+                    + "\n"
+                )
+
+        return out_path
 
     def find_prompt_in_knowledge(self, prompt):
         """
@@ -222,14 +246,23 @@ class RAGKnowledgePromptAgent:
         Returns:
         str: Response derived from the most similar chunk in knowledge.
         """
-        prompt_embedding = self.get_embedding(prompt)
-        df = pd.read_csv(f"embeddings-{self.unique_filename}", encoding="utf-8")
-        df["embeddings"] = df["embeddings"].apply(lambda x: np.array(eval(x)))
-        df["similarity"] = df["embeddings"].apply(
-            lambda emb: self.calculate_similarity(prompt_embedding, emb)
-        )
+        prompt_embedding = np.array(self.get_embedding(prompt), dtype=np.float32)
 
-        best_chunk = df.loc[df["similarity"].idxmax(), "text"]
+        emb_path = f"embeddings-{self.unique_filename}".replace(".csv", ".jsonl")
+        best_text = None
+        best_score = -1.0
+
+        with open(emb_path, "r", encoding="utf-8") as f:
+            for line in f:
+                rec = json.loads(line)
+                emb = np.array(rec["embedding"], dtype=np.float32)
+                score = float(
+                    np.dot(prompt_embedding, emb)
+                    / (np.linalg.norm(prompt_embedding) * np.linalg.norm(emb))
+                )
+                if score > best_score:
+                    best_score = score
+                    best_text = rec["text"]
 
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.chat.completions.create(
@@ -241,7 +274,7 @@ class RAGKnowledgePromptAgent:
                 },
                 {
                     "role": "user",
-                    "content": f"Answer based only on this information: {best_chunk}. Prompt: {prompt}",
+                    "content": f"Answer based only on this information: {best_text}. Prompt: {prompt}",
                 },
             ],
             temperature=0,
