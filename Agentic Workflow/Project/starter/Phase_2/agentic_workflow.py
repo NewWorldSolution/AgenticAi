@@ -230,6 +230,7 @@ routing_agent = RoutingAgent(
                 "Responsible for defining detailed engineering and development tasks only. "
                 "Breaks approved user stories or features into implementable technical tasks. "
                 "Includes task IDs, acceptance criteria, effort estimates, and dependencies. "
+                "Triggered by prompts mentioning: tasks, engineering tasks, Task ID, Acceptance Criteria, Dependencies, Estimated Effort."
                 "Does not define user stories or product features."
             ),
             "func": lambda x: development_engineer_support_function(x),
@@ -271,7 +272,7 @@ def product_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result
+    return result["final_response"]
 
 
 def program_manager_support_function(query):
@@ -291,7 +292,7 @@ def program_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result
+    return result["final_response"]
 
 
 def development_engineer_support_function(query):
@@ -311,7 +312,7 @@ def development_engineer_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result
+    return result["final_response"]
 
 
 def risk_manager_support_function(query):
@@ -331,7 +332,7 @@ def risk_manager_support_function(query):
         print(
             f"\n[{role}] ❌ FAILED | iterations={result['iterations']} | score={result['score']}/10\n"
         )
-    return result
+    return result["final_response"]
 
 
 # Run the workflow
@@ -343,7 +344,7 @@ workflow_prompt = (
     "Using the product specification, create a development plan by doing these steps:\n"
     "1) Generate user stories.\n"
     "2) Group them into product features.\n"
-    "3) Create detailed engineering tasks for each story.\n"
+    "3) Create detailed engineering tasks for each user story (include Task ID, Acceptance Criteria, Estimated Effort, and Dependencies).\n"
     "4) Generate a risk assessment for the project with mitigations.\n"
     "Return only the plan steps as a numbered list."
 )
@@ -360,21 +361,56 @@ print("\nDefining workflow steps from the workflow prompt")
 #      c. Print information about the step being executed and its result.
 #   4. After the loop, print the final output of the workflow (the last completed step).
 
+
 workflow_steps = action_planning_agent.extract_steps_from_prompt(workflow_prompt)
 completed_steps = []
 
 for step in workflow_steps:
-    print(f"\n--- Executing step: {step} ---")
+    print(f"\n--- Executing step \ {step} ---")
+    context = "\n\n".join(completed_steps)
+    step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
     try:
-        context = "\n\n".join(completed_steps)
-        step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
         result = routing_agent.route(step_prompt)
+        if not isinstance(result, str) or not result.strip():
+            result = (
+                f"[ERROR] Routing returned empty or non-string result for step: {step}"
+            )
 
     except Exception as e:
-        print(f"Error routing step: {e}")
-        result = f"Error routing step: {e}"
-    completed_steps.append(result["final_response"])
+        result = f"[ERROR] Step failed: {step}\nException: {type(e).__name__}: {e}"
 
-    print(f"Step result: {result}")
+    completed_steps.append(result)
+    print(f"Step result:\n{result}")
+
 print("\n*** Workflow execution completed ***\n")
-print(f"Final workflow output: {completed_steps[-1]}")
+final_output = completed_steps[-1] if completed_steps else "[ERROR] No steps executed."
+print(f"Final workflow output:\n{final_output}")
+
+output_file = BASE_DIR / "agentic_workflow_output.txt"
+
+with open(output_file, "w", encoding="utf-8") as f:
+    f.write("=" * 80 + "\n")
+    f.write("AGENTIC WORKFLOW OUTPUT - EMAIL ROUTER PROJECT\n")
+    f.write("=" * 80 + "\n\n")
+    f.write(f"Workflow Prompt: {workflow_prompt}\n\n")
+    f.write("=" * 80 + "\n")
+    f.write("FINAL OUTPUT:\n")
+    f.write("=" * 80 + "\n\n")
+    f.write("\n\n=== FULL STEP OUTPUTS (for reference) ===\n\n")
+    for i, step_result in enumerate(completed_steps, 1):
+        f.write(f"\n--- Step {i} ---\n")
+        f.write(step_result)
+        f.write("\n")
+
+print(f"\nSaved final workflow output to: {output_file}")
+# output_file = BASE_DIR / "agentic_workflow_output.txt"
+# with open(output_file, "w", encoding="utf-8") as f:
+#     f.write("=" * 80 + "\n")
+#     f.write("AGENTIC WORKFLOW OUTPUT - EMAIL ROUTER PROJECT\n")
+#     f.write("=" * 80 + "\n\n")
+#     f.write(f"Workflow Prompt: {workflow_prompt}\n\n")
+#     f.write("=" * 80 + "\n")
+#     f.write("FINAL OUTPUT:\n")
+#     f.write("=" * 80 + "\n\n")
+#     f.write(completed_steps[-1])
+# print(f"\nOutput saved to: {output_file}")

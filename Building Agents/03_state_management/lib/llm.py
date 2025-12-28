@@ -22,9 +22,13 @@ class LLM:
     ):
         self.model = model
         self.temperature = temperature
-        api_key = api_key or os.getenv("OPENAI_API_KEY")
-        base_url = base_url or os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL")
-        self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
+        api_key = (api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+        base_url = (
+            base_url or os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL") or ""
+        ).strip()
+        # print("key prefix:", api_key[:8] if api_key else None)
+        # print("base_url:", base_url if base_url else None)
+        self.client = OpenAI(api_key=api_key, base_url=base_url or None)
         self.tools: Dict[str, Tool] = {tool.name: tool for tool in (tools or [])}
 
     def register_tool(self, tool: Tool):
