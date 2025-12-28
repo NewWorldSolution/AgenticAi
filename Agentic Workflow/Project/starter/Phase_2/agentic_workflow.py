@@ -167,6 +167,7 @@ knowledge_risk_manager = (
     "Trigger/Early Warning: <signal>\n"
     "Status: Open/Mitigating/Closed\n\n"
     "Base primarily on PRODUCT SPECIFICATION; context may provide implementation details\n\n"
+    "Return plain text lines, not JSON.\n\n"
     f"{product_spec}"
 )
 risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -366,7 +367,7 @@ workflow_steps = action_planning_agent.extract_steps_from_prompt(workflow_prompt
 completed_steps = []
 
 for step in workflow_steps:
-    print(f"\n--- Executing step \ {step} ---")
+    print(f"\n--- Executing step: {step} ---")
     context = "\n\n".join(completed_steps)
     step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
     try:
@@ -396,6 +397,8 @@ with open(output_file, "w", encoding="utf-8") as f:
     f.write("=" * 80 + "\n")
     f.write("FINAL OUTPUT:\n")
     f.write("=" * 80 + "\n\n")
+    f.write(final_output + "\n\n")
+    f.write("=" * 80 + "\n")
     f.write("\n\n=== FULL STEP OUTPUTS (for reference) ===\n\n")
     for i, step_result in enumerate(completed_steps, 1):
         f.write(f"\n--- Step {i} ---\n")
