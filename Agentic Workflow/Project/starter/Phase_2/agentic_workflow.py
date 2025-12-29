@@ -73,7 +73,19 @@ product_manager_evaluation_agent = EvaluationAgent(
 )
 # Program Manager - Knowledge Augmented Prompt Agent
 persona_program_manager = "You are a Program Manager, you are responsible for defining the features for a product."
-knowledge_program_manager = "Features of a product are defined by organizing similar user stories into cohesive groups. Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
+knowledge_program_manager = (
+    "You MUST create product features by grouping the user stories from CONTEXT FROM PREVIOUS STEPS.\n\n"
+    "Return features using this EXACT structure for EACH feature (no markdown, no bullets):\n"
+    "Feature Name: <clear, concise title>\n"
+    "Description: <brief explanation of what the feature does and its purpose>\n"
+    "Key Functionality: <specific capabilities/actions provided>\n"
+    "User Benefit: <how this feature creates value for the user>\n\n"
+    "Rules:\n"
+    "- Output ONLY feature blocks in the exact format above.\n"
+    "- Do NOT output numbered lists.\n"
+    "- Do NOT output bullet points.\n"
+    "- Use the CONTEXT FROM PREVIOUS STEPS as the source of truth.\n"
+)
 # Instantiate a program_manager_knowledge_agent using 'persona_program_manager' and 'knowledge_program_manager'
 # (This is a necessary step before TODO 8. Students should add the instantiation code here.)
 program_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -101,14 +113,29 @@ program_manager_evaluation_agent = EvaluationAgent(
         "Feature Name: A clear, concise title that identifies the capability\n"
         "Description: A brief explanation of what the feature does and its purpose\n"
         "Key Functionality: The specific capabilities or actions the feature provides\n"
-        "User Benefit: How this feature creates value for the user"
+        "User Benefit: How this feature creates value for the user\n\n"
+        "Scoring rules:\n"
+        "- Score must be <= 5 if the response is not written as Feature blocks with those exact field labels.\n"
+        "- If any feature is missing any field label, score must be <= 5.\n"
     ),
     worker_agent=program_manager_knowledge_agent,
     max_interactions=10,
+    min_acceptable_score=7,
 )
 # Development Engineer - Knowledge Augmented Prompt Agent
 persona_dev_engineer = "You are a Development Engineer, you are responsible for defining the development tasks for a product."
-knowledge_dev_engineer = "Development tasks are defined by identifying what needs to be built to implement each user story. Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
+knowledge_dev_engineer = (
+    "Development tasks are defined by identifying what needs to be built to implement each user story."
+    "Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
+    "Return tasks using this exact structure for EACH task (no markdown, no bullets, no JSON):\n"
+    "Task ID: <ID>\n"
+    "Task Title: <brief description of the specific development work>\n"
+    "Related User Story: <reference to the parent user story>\n"
+    "Description: <detailed explanation of the technical work required>\n"
+    "Acceptance Criteria: <specific requirements that must be met for completion>\n"
+    "Estimated Effort: <time or complexity estimation>\n"
+    "Dependencies: <any tasks that must be completed first>\n\n"
+)
 # Instantiate a development_engineer_knowledge_agent using 'persona_dev_engineer' and 'knowledge_dev_engineer'
 # (This is a necessary step before TODO 9. Students should add the instantiation code here.)
 development_engineer_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -135,6 +162,7 @@ development_engineer_evaluation_agent = EvaluationAgent(
     persona=persona_dev_engineer_eval,
     evaluation_criteria=(
         "The answer should be tasks following this exact structure: "
+        "Each task block MUST start with ‘Task ID:’ and include all field labels exactly.\n"
         "Task ID: A unique identifier for tracking purposes\n"
         "Task Title: Brief description of the specific development work (must not be blank)\n"
         "Related User Story: Reference to the parent user story (must not be blank)\n"
@@ -143,6 +171,8 @@ development_engineer_evaluation_agent = EvaluationAgent(
         "Estimated Effort: Time or complexity estimation\n"
         "Dependencies: Any tasks that must be completed first\n"
         "Score must be <= 5 if structure is not followed."
+        "The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON."
+        'If the answer starts with "{" or "[" OR contains a top-level JSON object/array, score must be 0.'
     ),
     worker_agent=development_engineer_knowledge_agent,
     max_interactions=10,
@@ -167,7 +197,9 @@ knowledge_risk_manager = (
     "Trigger/Early Warning: <signal>\n"
     "Status: Open/Mitigating/Closed\n\n"
     "Base primarily on PRODUCT SPECIFICATION; context may provide implementation details\n\n"
-    "Return plain text lines, not JSON.\n\n"
+    "The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON."
+    "Output must be plain text in the required Risk ID / Risk Title / ... structure, not JSON.\n\n"
+    'If the answer is JSON (starts with "{" or "[" ), score must be 0.'
     f"{product_spec}"
 )
 risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -383,8 +415,15 @@ for step in workflow_steps:
     completed_steps.append(result)
     print(f"Step result:\n{result}")
 
+sections = []
+for i, step in enumerate(workflow_steps, 1):
+    step_result = (
+        completed_steps[i - 1] if i - 1 < len(completed_steps) else "[MISSING OUTPUT]"
+    )
+    sections.append(f"=== STEP {i}: {step} ===\n{step_result}")
+
 print("\n*** Workflow execution completed ***\n")
-final_output = completed_steps[-1] if completed_steps else "[ERROR] No steps executed."
+final_output = "\n\n".join(sections)
 print(f"Final workflow output:\n{final_output}")
 
 output_file = BASE_DIR / "agentic_workflow_output.txt"
@@ -399,11 +438,12 @@ with open(output_file, "w", encoding="utf-8") as f:
     f.write("=" * 80 + "\n\n")
     f.write(final_output + "\n\n")
     f.write("=" * 80 + "\n")
-    f.write("\n\n=== FULL STEP OUTPUTS (for reference) ===\n\n")
-    for i, step_result in enumerate(completed_steps, 1):
-        f.write(f"\n--- Step {i} ---\n")
-        f.write(step_result)
-        f.write("\n")
+    # f.write("FULL STEP OUTPUTS (FOR REFERENCE):\n")
+    # f.write("=" * 80 + "\n\n")
+    # for i, step_result in enumerate(completed_steps, 1):
+    #     f.write(f"\n--- Step {i}: {workflow_steps[i-1]} ---\n")
+    #     f.write(step_result)
+    #     f.write("\n\n")
 
 print(f"\nSaved final workflow output to: {output_file}")
 # output_file = BASE_DIR / "agentic_workflow_output.txt"
