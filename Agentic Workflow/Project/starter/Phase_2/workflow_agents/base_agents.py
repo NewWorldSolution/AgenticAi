@@ -106,20 +106,33 @@ class RAGKnowledgePromptAgent:
     and leverages embeddings to respond to prompts based solely on retrieved information.
     """
 
-    def __init__(self, openai_api_key, persona, chunk_size=2000, chunk_overlap=100):
+    def __init__(
+        self,
+        openai_api_key,
+        persona,
+        chunk_size=1200,
+        chunk_overlap=100,
+        max_chunks=80,
+        top_k=3,
+        max_context_chars=6000,
+    ):
         """
-        Initializes the RAGKnowledgePromptAgent with API credentials and configuration settings.
-
-        Parameters:
-        openai_api_key (str): API key for accessing OpenAI.
-        persona (str): Persona description for the agent.
-        chunk_size (int): The size of text chunks for embedding. Defaults to 2000.
-        chunk_overlap (int): Overlap between consecutive chunks. Defaults to 100.
+        Memory-safe RAG agent:
+        - Chunk knowledge once
+        - Embed chunks once (bounded by max_chunks)
+        - Store embeddings in-memory as float32 NumPy matrix
         """
         self.persona = persona
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.chunk_size = int(chunk_size)
+        self.chunk_overlap = int(chunk_overlap)
+        self.max_chunks = int(max_chunks)
+        self.top_k = int(top_k)
+        self.max_context_chars = int(max_context_chars)
         self.openai_api_key = openai_api_key
+
+        # In-memory index
+        self._chunks = []
+        self._embeddings = None
         self.unique_filename = (
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.csv"
         )
@@ -136,7 +149,9 @@ class RAGKnowledgePromptAgent:
         """
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.embeddings.create(
-            model="text-embedding-3-large", input=text, encoding_format="float"
+            model="text-embedding-3-large",
+            input=text,
+            encoding_format="float",
         )
         return response.data[0].embedding
 
@@ -168,7 +183,7 @@ class RAGKnowledgePromptAgent:
         text = re.sub(r"[ \t]+", " ", text).strip()
 
         if len(text) <= self.chunk_size:
-            return [{"chunk_id": 0, "text": text, "chunk_size": len(text)}]
+            return [{"chunk_id": 0, "text": text}]
 
         chunks, start, chunk_id = [], 0, 0
 
@@ -177,28 +192,57 @@ class RAGKnowledgePromptAgent:
             if separator in text[start:end]:
                 end = start + text[start:end].rindex(separator) + len(separator)
 
-            chunks.append(
-                {
-                    "chunk_id": chunk_id,
-                    "text": text[start:end],
-                    "chunk_size": end - start,
-                    "start_char": start,
-                    "end_char": end,
-                }
-            )
+            chunk = text[start:end].strip()
 
-            start = end - self.chunk_overlap
-            chunk_id += 1
+            if chunk:
+                chunks.append({"chunk_id": chunk_id, "text": chunk})
+                chunk_id += 1
 
-        with open(
-            f"chunks-{self.unique_filename}", "w", newline="", encoding="utf-8"
-        ) as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=["text", "chunk_size"])
-            writer.writeheader()
-            for chunk in chunks:
-                writer.writerow({k: chunk[k] for k in ["text", "chunk_size"]})
+            start = max(0, end - self.chunk_overlap)
 
+            if chunk_id > self.max_chunks * 5:
+                break
         return chunks
+
+    def build_index(self, knowledge_text: str):
+        """
+        Build the in-memory vector index. Call ONCE (e.g., at startup).
+        """
+        chunks = self.chunk_text(knowledge_text)[: self.max_chunks]
+        self._chunks = [c["text"] for c in chunks]
+
+        if not self._chunks:
+            self._embeddings = None
+            return
+
+        embs = []
+        for t in self._chunks:
+            e = np.array(self.get_embedding(t), dtype=np.float32)
+            embs.append(e)
+
+        self._embeddings = np.vstack(embs)  # shape: (n, d)
+
+    def retrieve(self, prompt: str, top_k: int | None = None) -> str:
+        """Return concatenated top-k most similar chunks."""
+        if self._embeddings is None or not self._chunks:
+            return ""
+
+        k = self.top_k if top_k is None else int(top_k)
+
+        q = np.array(self.get_embedding(prompt), dtype=np.float32)
+
+        # cosine similarity
+        denom = np.linalg.norm(self._embeddings, axis=1) * np.linalg.norm(q) + 1e-9
+        sims = (self._embeddings @ q) / denom  # shape (n,)
+
+        top_idx = np.argsort(-sims)[:k]
+        retrieved = "\n\n".join(self._chunks[i] for i in top_idx)
+
+        # hard-limit context size to keep prompts small and stable
+        if len(retrieved) > self.max_context_chars:
+            retrieved = retrieved[: self.max_context_chars] + "..."
+
+        return retrieved
 
     def calculate_embeddings(self):
         """
@@ -222,14 +266,15 @@ class RAGKnowledgePromptAgent:
         Returns:
         str: Response derived from the most similar chunk in knowledge.
         """
-        prompt_embedding = self.get_embedding(prompt)
-        df = pd.read_csv(f"embeddings-{self.unique_filename}", encoding="utf-8")
-        df["embeddings"] = df["embeddings"].apply(lambda x: np.array(eval(x)))
-        df["similarity"] = df["embeddings"].apply(
-            lambda emb: self.calculate_similarity(prompt_embedding, emb)
-        )
+        # prompt_embedding = self.get_embedding(prompt)
+        # df = pd.read_csv(f"embeddings-{self.unique_filename}", encoding="utf-8")
+        # df["embeddings"] = df["embeddings"].apply(lambda x: np.array(eval(x)))
+        # df["similarity"] = df["embeddings"].apply(
+        #     lambda emb: self.calculate_similarity(prompt_embedding, emb)
+        # )
 
-        best_chunk = df.loc[df["similarity"].idxmax(), "text"]
+        # best_chunk = df.loc[df["similarity"].idxmax(), "text"]
+        retrieved = self.retrieve(prompt)
 
         client = OpenAI(base_url=BASE_URL, api_key=self.openai_api_key)
         response = client.chat.completions.create(
@@ -237,11 +282,15 @@ class RAGKnowledgePromptAgent:
             messages=[
                 {
                     "role": "system",
-                    "content": f"You are {self.persona}, a knowledge-based assistant. Forget previous context.",
+                    "content": (
+                        f"You are {self.persona}. Forget previous context. "
+                        "You MUST answer using ONLY the retrieved context. "
+                        "If the retrieved context does not contain the answer, say you don't know."
+                    ),
                 },
                 {
                     "role": "user",
-                    "content": f"Answer based only on this information: {best_chunk}. Prompt: {prompt}",
+                    "content": f"Retrieved context:\n{retrieved}\n\nPrompt:\n{prompt}",
                 },
             ],
             temperature=0,
@@ -315,18 +364,27 @@ class EvaluationAgent:
 
                 ANSWER:
                 {response_from_worker}
-                Return ONLY valid JSON with fields:
-                - score (integer 0-10)
-                - issues (list of strings; each issue must be specific and reference what is wrong)
-                - fix_plan (object) with keys:
-                    - must_add (list of strings)
-                    - must_change (list of strings)
-                    - must_remove (list of strings)
-                    - rewrite_rules (list of strings)
-                - revised_example (string; provide ONE corrected example line that matches the required structure)
-                - instructions (string; MUST be a numbered list of concrete edit actions the worker should perform.
-                If score >= {self.min_acceptable_score}, instructions must be an empty string, issues must be empty, and fix_plan must contain empty lists.)
-                """
+                
+                Return ONLY valid JSON (no markdown, no backticks, no extra text) that matches EXACTLY this schema:
+                    {{
+                    "score": 0-10 integer,
+                    "issues": ["..."],
+                    "fix_plan": {{
+                        "must_add": ["..."],
+                        "must_change": ["..."],
+                        "must_remove": ["..."],
+                        "rewrite_rules": ["..."]
+                    }},
+                    "revised_example": "one short corrected example",
+                    "instructions": "1) ...\\n2) ...\\n3) ..."
+                    }}
+
+                    Rule:
+                    - If score >= {self.min_acceptable_score}:
+                    - issues must be []
+                    - instructions must be ""
+                    - fix_plan lists must all be []
+                    """
 
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -344,6 +402,10 @@ class EvaluationAgent:
                 raw = response.choices[0].message.content.strip()
                 raw = raw.replace("```json", "").replace("```", "").strip()
                 try:
+                    start = raw.find("{")
+                    end = raw.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        raw = raw[start : end + 1]
                     data = json.loads(raw)
                     rev = data.get("revised_example", "")
                     if rev is None:

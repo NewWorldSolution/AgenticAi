@@ -12,8 +12,25 @@ from workflow_agents.base_agents import (  # noqa: E402
     KnowledgeAugmentedPromptAgent,
     EvaluationAgent,
     RoutingAgent,
+    RAGKnowledgePromptAgent,
 )
 
+
+## control the memorty usage of RAG agent
+# def set_memory_limit_gb(gb: float):
+#     try:
+#         import resource  # Unix only
+
+#         limit_bytes = int(gb * 1024**3)
+#         resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+#         print(f"[SAFETY] Set hard memory limit to {gb} GB")
+#     except Exception as e:
+#         print(
+#             f"[SAFETY] Could not set hard memory limit (platform may not support it): {e}"
+#         )
+
+
+# set_memory_limit_gb(18)
 
 # TODO: 2 - Load the OpenAI key into a variable called openai_api_key
 load_dotenv()
@@ -42,12 +59,36 @@ action_planning_agent = ActionPlanningAgent(
     knowledge=knowledge_action_planning, openai_api_key=openai_api_key
 )
 
+# RAG Agent for Product Spec
+persona_rag_agent = "You are a requirements analyst. Return only relevant product spec details, verbatim or tightly paraphrased."
+
+rag_spec_agent = RAGKnowledgePromptAgent(
+    openai_api_key=openai_api_key, persona=persona_rag_agent
+)
+rag_spec_agent.build_index(product_spec)
+
+
+def get_relevant_product_spec(step_text: str) -> str:
+    """Helper function to return the product specification relevant to the step_text."""
+    query = (
+        "From the Email Router product specification, extract the most relevant technical requirements "
+        "and capabilities for this workflow step. Focus on: RAG, vector database, embeddings, LLM classifiers, "
+        "SMTP/IMAP ingestion, confidence scoring, approval workflow, and monitoring metrics.\n\n"
+        f"WORKFLOW STEP: {step_text}"
+    )
+
+    return rag_spec_agent.find_prompt_in_knowledge(query)
+
+
 # Product Manager - Knowledge Augmented Prompt Agent
 persona_product_manager = "You are a Product Manager, you are responsible for defining the user stories for a product."
 knowledge_product_manager = (
     "Stories are defined by writing sentences with a persona, an action, and a desired outcome. "
     "The sentences always start with: As a "
     "Write several stories for the product spec below, where the personas are the different users of the product. "
+    "Each user story MUST reference at least one Email Router capability such as RAG responses, vector DB knowledge base / embeddings for RAG retrieval , LLM classification, SMTP/IMAP ingestion, confidence scoring, or approval workflow. "
+    "At least one story MUST explicitly mention a vector database / embeddings for RAG retrieval.\n"
+    "IMPORTANT: RAG refers to Retrieval-Augmented Generation (retrieving relevant documents from a vector database and using them as context for LLM-generated responses), NOT Red/Amber/Green classification.\n"
     # TODO: 5 - Complete this knowledge string by appending the product_spec loaded in TODO 3
     "PRODUCT SPECIFICATION: \n"
     f"{product_spec}"
@@ -75,16 +116,20 @@ product_manager_evaluation_agent = EvaluationAgent(
 persona_program_manager = "You are a Program Manager, you are responsible for defining the features for a product."
 knowledge_program_manager = (
     "You MUST create product features by grouping the user stories from CONTEXT FROM PREVIOUS STEPS.\n\n"
+    "Create at least one feature for EACH user story. Do not omit any user story.\n"
     "Return features using this EXACT structure for EACH feature (no markdown, no bullets):\n"
     "Feature Name: <clear, concise title>\n"
     "Description: <brief explanation of what the feature does and its purpose>\n"
     "Key Functionality: <specific capabilities/actions provided>\n"
     "User Benefit: <how this feature creates value for the user>\n\n"
-    "Rules:\n"
+    "When defining the RAG feature, Key Functionality MUST include embeddings + vector database retrieval.\n\n"
+    "Rules:\n\n"
     "- Output ONLY feature blocks in the exact format above.\n"
     "- Do NOT output numbered lists.\n"
     "- Do NOT output bullet points.\n"
     "- Use the CONTEXT FROM PREVIOUS STEPS as the source of truth.\n"
+    "Features must explicitly incorporate the technical mechanisms from the spec when relevant (RAG, vector DB, LLM classifiers, SMTP/IMAP, approval workflow, confidence scoring).\n"
+    "IMPORTANT: RAG refers to Retrieval-Augmented Generation (retrieving relevant documents from a vector database and using them as context for LLM-generated responses), NOT Red/Amber/Green classification."
 )
 # Instantiate a program_manager_knowledge_agent using 'persona_program_manager' and 'knowledge_program_manager'
 # (This is a necessary step before TODO 8. Students should add the instantiation code here.)
@@ -109,14 +154,17 @@ program_manager_evaluation_agent = EvaluationAgent(
     openai_api_key=openai_api_key,
     persona=persona_program_manager_eval,
     evaluation_criteria=(
+        "The response must include at least as many Feature blocks as there are user stories in the context.\n"
         "The answer should be product features that follow the following structure:\n"
         "Feature Name: A clear, concise title that identifies the capability\n"
         "Description: A brief explanation of what the feature does and its purpose\n"
         "Key Functionality: The specific capabilities or actions the feature provides\n"
         "User Benefit: How this feature creates value for the user\n\n"
-        "Scoring rules:\n"
+        "Each Feature must clearly map to exactly one user story.\n"
+        "Scoring rules:\n\n"
         "- Score must be <= 5 if the response is not written as Feature blocks with those exact field labels.\n"
         "- If any feature is missing any field label, score must be <= 5.\n"
+        "- Score must be <= 5 if any user story is not represented by a feature"
     ),
     worker_agent=program_manager_knowledge_agent,
     max_interactions=10,
@@ -125,16 +173,31 @@ program_manager_evaluation_agent = EvaluationAgent(
 # Development Engineer - Knowledge Augmented Prompt Agent
 persona_dev_engineer = "You are a Development Engineer, you are responsible for defining the development tasks for a product."
 knowledge_dev_engineer = (
-    "Development tasks are defined by identifying what needs to be built to implement each user story."
-    "Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth."
-    "Return tasks using this exact structure for EACH task (no markdown, no bullets, no JSON):\n"
-    "Task ID: <ID>\n"
-    "Task Title: <brief description of the specific development work>\n"
-    "Related User Story: <reference to the parent user story>\n"
-    "Description: <detailed explanation of the technical work required>\n"
-    "Acceptance Criteria: <specific requirements that must be met for completion>\n"
-    "Estimated Effort: <time or complexity estimation>\n"
-    "Dependencies: <any tasks that must be completed first>\n\n"
+    "Development tasks are defined by identifying what needs to be built to implement each user story. "
+    "Use the CONTEXT FROM PREVIOUS STEPS in the user prompt as the source of truth. "
+    "IMPORTANT: The 'Related User Story' field MUST reference the actual user story text "
+    "(starting with 'As a [type of user]...'), NOT the feature name. "
+    "User stories are found in Step 1 of the context. Features are organizational groupings and should NOT be referenced in the Related User Story field.\n\n"
+    "When applicable, include tasks like implementing RAG pipeline, vector DB setup, embedding ingestion, LLM classifier, confidence scoring, and approval workflow.\n\n"
+    "Return tasks using this EXACT structure for EACH task (no markdown, no bullets, no numbered lists, no JSON):\n"
+    "Task ID: <unique id>\n"
+    "Task Title: <short title>\n"
+    "Related User Story: <MUST be the full user story text starting with 'As a ...'>\n"
+    "Description: <technical description>\n"
+    "Acceptance Criteria: <measurable criteria>\n"
+    "Estimated Effort: <time estimate>\n"
+    "Dependencies: <task ids or None>\n\n"
+    "Rules:\n\n"
+    "- The 'Related User Story' must be the FULL user story sentence, not a feature name.\n"
+    "- Tasks must include Email Router specifics when relevant: RAG pipeline, vector database, embeddings, "
+    "LLM classifier, confidence scoring, SMTP/IMAP ingestion, approval workflow, monitoring metrics.\n"
+    "IMPORTANT: RAG refers to Retrieval-Augmented Generation (retrieving relevant documents from a vector database and using them as context for LLM-generated responses), NOT Red/Amber/Green classification.\n"
+    "When implementing RAG, tasks MUST involve:\n"
+    "- document chunking\n"
+    "- embedding generation\n"
+    "- vector database retrieval\n"
+    "- LLM-based response generation grounded in retrieved context "
+    "You MUST create at least one task for EVERY user story in Step 1 (including SMTP/IMAP ingestion and dashboard/monitoring if present). Do not omit any story."
 )
 # Instantiate a development_engineer_knowledge_agent using 'persona_dev_engineer' and 'knowledge_dev_engineer'
 # (This is a necessary step before TODO 9. Students should add the instantiation code here.)
@@ -162,17 +225,22 @@ development_engineer_evaluation_agent = EvaluationAgent(
     persona=persona_dev_engineer_eval,
     evaluation_criteria=(
         "The answer should be tasks following this exact structure: "
-        "Each task block MUST start with ‘Task ID:’ and include all field labels exactly.\n"
+        "Each task block MUST start with 'Task ID:' and include all field labels exactly.\n"
         "Task ID: A unique identifier for tracking purposes\n"
         "Task Title: Brief description of the specific development work (must not be blank)\n"
-        "Related User Story: Reference to the parent user story (must not be blank)\n"
+        "Related User Story: Reference to the parent user story (must start with 'As a [type of user]...', not a feature name)\n"
         "Description: Detailed explanation of the technical work required (must not be blank)\n"
         "Acceptance Criteria: Specific requirements that must be met for completion (must not be blank)\n"
         "Estimated Effort: Time or complexity estimation\n"
         "Dependencies: Any tasks that must be completed first\n"
-        "Score must be <= 5 if structure is not followed."
-        "The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON."
-        'If the answer starts with "{" or "[" OR contains a top-level JSON object/array, score must be 0.'
+        "Count the user stories in Step 1 of the context.\n"
+        "The answer must include at least one task for each unique user story.\n"
+        "Scoring rules:\n"
+        "- Score must be <= 5 if 'Related User Story' references a feature name instead of actual user story text.\n"
+        "- The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON.\n"
+        '- If the answer starts with "{" or "[" OR contains a top-level JSON object/array, score must be 0.\n'
+        "- Score must be <= 5 if any task is missing Task Title or Description fields.\n"
+        "-Score must be <= 5 if any user story from Step 1 has zero tasks."
     ),
     worker_agent=development_engineer_knowledge_agent,
     max_interactions=10,
@@ -197,9 +265,11 @@ knowledge_risk_manager = (
     "Trigger/Early Warning: <signal>\n"
     "Status: Open/Mitigating/Closed\n\n"
     "Base primarily on PRODUCT SPECIFICATION; context may provide implementation details\n\n"
-    "The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON."
+    "The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON.\n"
     "Output must be plain text in the required Risk ID / Risk Title / ... structure, not JSON.\n\n"
-    'If the answer is JSON (starts with "{" or "[" ), score must be 0.'
+    'If the answer is JSON (starts with "{" or "[" ), score must be 0.\n'
+    "Include at least one risk each for: RAG hallucinations/grounding, vector DB/privacy, SMTP/IMAP reliability, classifier confidence/routing errors, approval workflow bypass.\n "
+    "IMPORTANT: RAG refers to Retrieval-Augmented Generation (retrieving relevant documents from a vector database and using them as context for LLM-generated responses), NOT Red/Amber/Green classification.\n"
     f"{product_spec}"
 )
 risk_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
@@ -263,7 +333,7 @@ routing_agent = RoutingAgent(
                 "Responsible for defining detailed engineering and development tasks only. "
                 "Breaks approved user stories or features into implementable technical tasks. "
                 "Includes task IDs, acceptance criteria, effort estimates, and dependencies. "
-                "Triggered by prompts mentioning: tasks, engineering tasks, Task ID, Acceptance Criteria, Dependencies, Estimated Effort."
+                "Triggered by prompts mentioning: tasks, engineering tasks, Task ID, Acceptance Criteria, Dependencies, Estimated Effort. "
                 "Does not define user stories or product features."
             ),
             "func": lambda x: development_engineer_support_function(x),
@@ -377,7 +447,7 @@ workflow_prompt = (
     "Using the product specification, create a development plan by doing these steps:\n"
     "1) Generate user stories.\n"
     "2) Group them into product features.\n"
-    "3) Create detailed engineering tasks for each user story (include Task ID, Acceptance Criteria, Estimated Effort, and Dependencies).\n"
+    "3) Create detailed engineering tasks for each user story (include Task ID, Task Title, Related User Story, Description, Acceptance Criteria, Estimated Effort, and Dependencies).\n"
     "4) Generate a risk assessment for the project with mitigations.\n"
     "Return only the plan steps as a numbered list."
 )
@@ -401,7 +471,12 @@ completed_steps = []
 for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
     context = "\n\n".join(completed_steps)
-    step_prompt = f"{step}\n\nCONTEXT FROM PREVIOUS STEPS:\n{context}"
+    spec_details = get_relevant_product_spec(step)
+    step_prompt = (
+        f"{step}\n\n"
+        f"CONTEXT FROM PREVIOUS STEPS:\n{context}\n\n"
+        f"RELEVANT PRODUCT SPEC DETAILS (use these explicitly; do not ignore):\n{spec_details}"
+    )
     try:
         result = routing_agent.route(step_prompt)
         if not isinstance(result, str) or not result.strip():
@@ -420,10 +495,15 @@ for i, step in enumerate(workflow_steps, 1):
     step_result = (
         completed_steps[i - 1] if i - 1 < len(completed_steps) else "[MISSING OUTPUT]"
     )
-    sections.append(f"=== STEP {i}: {step} ===\n{step_result}")
+    sections.append(step_result.strip())
+    if i < len(workflow_steps) - 1:
+        sections.append("\n" + ("-" * 60) + "\n")
+    # sections.append(f"=== STEP {i}: {step} ===\n{step_result}")
 
 print("\n*** Workflow execution completed ***\n")
-final_output = "\n\n".join(sections)
+final_output = "=== CONSOLIDATED EMAIL ROUTER PROJECT PLAN ===\n\n" + "\n\n".join(
+    sections
+)
 print(f"Final workflow output:\n{final_output}")
 
 output_file = BASE_DIR / "agentic_workflow_output.txt"
@@ -438,12 +518,15 @@ with open(output_file, "w", encoding="utf-8") as f:
     f.write("=" * 80 + "\n\n")
     f.write(final_output + "\n\n")
     f.write("=" * 80 + "\n")
-    # f.write("FULL STEP OUTPUTS (FOR REFERENCE):\n")
-    # f.write("=" * 80 + "\n\n")
-    # for i, step_result in enumerate(completed_steps, 1):
-    #     f.write(f"\n--- Step {i}: {workflow_steps[i-1]} ---\n")
-    #     f.write(step_result)
-    #     f.write("\n\n")
+    f.write("FULL STEP OUTPUTS (FOR REFERENCE):\n")
+    f.write("=" * 80 + "\n\n")
+    for i, step_result in enumerate(completed_steps, 1):
+        step_name = (
+            workflow_steps[i - 1] if i - 1 < len(workflow_steps) else "[UNKNOWN STEP]"
+        )
+        f.write(f"\n--- Step {step_name} ---\n")
+        f.write(step_result)
+        f.write("\n\n")
 
 print(f"\nSaved final workflow output to: {output_file}")
 # output_file = BASE_DIR / "agentic_workflow_output.txt"
