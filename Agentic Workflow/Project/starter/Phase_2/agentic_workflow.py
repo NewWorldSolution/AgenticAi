@@ -108,7 +108,10 @@ product_manager_knowledge_agent = KnowledgeAugmentedPromptAgent(
 product_manager_evaluation_agent = EvaluationAgent(
     openai_api_key=openai_api_key,
     persona="You are an evaluation agent that checks the answers of other worker agents",
-    evaluation_criteria="As a [type of user], I want [an action or feature] so that [benefit/value].",
+    evaluation_criteria=(
+        "As a [type of user], I want [an action or feature] so that [benefit/value]. \n"
+        "It should be at least 4 user stories. \n"
+    ),
     worker_agent=product_manager_knowledge_agent,
     max_interactions=10,
 )
@@ -343,6 +346,7 @@ routing_agent = RoutingAgent(
             "description": (
                 "Responsible for identifying project risks and mitigations based on the product specification. "
                 "Produces a structured risk assessment (Risk ID, Likelihood, Impact, Mitigation, Owner, Triggers). "
+                "Triggered by prompts mentioning: risk assessment, risks, mitigations, risk register. "
                 "Does not create user stories, features, or engineering tasks."
             ),
             "func": lambda x: risk_manager_support_function(x),
