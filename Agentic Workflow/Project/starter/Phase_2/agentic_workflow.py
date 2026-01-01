@@ -110,7 +110,7 @@ product_manager_evaluation_agent = EvaluationAgent(
     persona="You are an evaluation agent that checks the answers of other worker agents",
     evaluation_criteria=(
         "As a [type of user], I want [an action or feature] so that [benefit/value]. \n"
-        "It should be at least 4 user stories. \n"
+        "It should be at least 5 user stories. \n"
     ),
     worker_agent=product_manager_knowledge_agent,
     max_interactions=10,
@@ -119,7 +119,7 @@ product_manager_evaluation_agent = EvaluationAgent(
 persona_program_manager = "You are a Program Manager, you are responsible for defining the features for a product."
 knowledge_program_manager = (
     "You MUST create product features by grouping the user stories from CONTEXT FROM PREVIOUS STEPS.\n\n"
-    "Create at least one feature for EACH user story. Do not omit any user story.\n"
+    "Create AT LEAST ONE feature for EACH user story. Do not OMIT any user story.\n"
     "Return features using this EXACT structure for EACH feature (no markdown, no bullets):\n"
     "Feature Name: <clear, concise title>\n"
     "Description: <brief explanation of what the feature does and its purpose>\n"
@@ -236,14 +236,15 @@ development_engineer_evaluation_agent = EvaluationAgent(
         "Acceptance Criteria: Specific requirements that must be met for completion (must not be blank)\n"
         "Estimated Effort: Time or complexity estimation\n"
         "Dependencies: Any tasks that must be completed first\n"
-        "Count the user stories in Step 1 of the context.\n"
-        "The answer must include at least one task for each unique user story.\n"
+        "Validation rules (must be checkable from ANSWER only):\n"
+        "- The answer must include at least 5 task blocks (count 'Task ID:' occurrences).\n"
+        "- Every 'Related User Story:' line must start with 'As a '. If not, score must be <= 5.\n"
         "Scoring rules:\n"
         "- Score must be <= 5 if 'Related User Story' references a feature name instead of actual user story text.\n"
         "- The worker ANSWER must be plain text (NOT JSON). Only YOUR evaluation output is JSON.\n"
         '- If the answer starts with "{" or "[" OR contains a top-level JSON object/array, score must be 0.\n'
         "- Score must be <= 5 if any task is missing Task Title or Description fields.\n"
-        "-Score must be <= 5 if any user story from Step 1 has zero tasks."
+        "- Score must be <= 5 if any user story from Step 1 has zero tasks."
     ),
     worker_agent=development_engineer_knowledge_agent,
     max_interactions=10,
@@ -318,7 +319,10 @@ routing_agent = RoutingAgent(
     agents=[
         {
             "name": "product manager agent",
-            "description": "Responsible for defining product personas and user stories only. Does not define features or tasks. Does not group stories",
+            "description": (
+                "Responsible for defining product personas and user stories only. Does not define features or tasks. Does not group stories"
+                "Triggered by prompting mentioning generating or creating user stories."
+            ),
             "func": lambda x: product_manager_support_function(x),
         },
         {
@@ -476,11 +480,25 @@ for step in workflow_steps:
     print(f"\n--- Executing step: {step} ---")
     context = "\n\n".join(completed_steps)
     spec_details = get_relevant_product_spec(step)
+    bad_markers = [
+        "i don't have information",
+        "i do not have information",
+        "i don't know",
+        "cannot find",
+    ]
+    if any(m in spec_details.lower() for m in bad_markers):
+        spec_details = (
+            "Use the Product-Spec-Email-Router.txt capabilities explicitly: "
+            "SMTP/IMAP ingestion, LLM classification, confidence scoring, vector database + embeddings, "
+            "RAG response generation, approval workflow, routing logic, dashboard metrics, AES-256 + TLS, RBAC + MFA."
+        )
+
     step_prompt = (
         f"{step}\n\n"
         f"CONTEXT FROM PREVIOUS STEPS:\n{context}\n\n"
         f"RELEVANT PRODUCT SPEC DETAILS (use these explicitly; do not ignore):\n{spec_details}"
     )
+
     try:
         result = routing_agent.route(step_prompt)
         if not isinstance(result, str) or not result.strip():
