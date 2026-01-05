@@ -1,0 +1,14 @@
+# Vector database
+chromadb>=1.0.4
+
+# LLM API
+openai>=1.73.0
+
+# Data validation / schemas
+pydantic>=2.11.3
+
+# Environment variables
+python-dotenv>=1.1.0
+
+# Web search tool
+tavily-python>=0.5.4
