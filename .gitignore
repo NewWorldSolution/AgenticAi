@@ -1,12 +1,24 @@
 # Environment variables
 .env
 
-# Python
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# Python cache
 __pycache__/
 *.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing
+.pytest_cache/
+.coverage
 
 # OS files
 .DS_Store
 
-# docx files
+# Docs / exports
 *.docx
