@@ -1,3 +1,4 @@
+from ast import main
 from typing import Dict, List, Any, Optional
 import os
 import dotenv
@@ -6,7 +7,7 @@ import re
 import json
 
 dotenv.load_dotenv(dotenv_path="../.env")
-openai_api_key = os.getenv("UDACITY_OPENAI_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY")
 
 model = OpenAIServerModel(
     model_id="gpt-4o-mini",
@@ -14,20 +15,30 @@ model = OpenAIServerModel(
     api_key=openai_api_key,
 )
 
+
 class BookingSystem:
     def __init__(self):
         self.bookings: Dict[str, Dict[str, str]] = {}
+
     def check_availability(self, date: str, time: str) -> bool:
-        if date not in self.bookings: return True
+        if date not in self.bookings:
+            return True
         return time not in self.bookings.get(date, {})
+
     def add_booking(self, date: str, time: str, customer: str) -> bool:
-        if not self.check_availability(date, time): return False 
-        if date not in self.bookings: self.bookings[date] = {}
+        if not self.check_availability(date, time):
+            return False
+        if date not in self.bookings:
+            self.bookings[date] = {}
         self.bookings[date][time] = customer
         return True
+
     def get_bookings(self, date: str) -> Dict[str, str]:
         return self.bookings.get(date, {})
+
+
 booking_system = BookingSystem()
+
 
 @tool
 def check_booking_availability(date: str, time: str) -> str:
@@ -44,6 +55,7 @@ def check_booking_availability(date: str, time: str) -> str:
     if booking_system.check_availability(date, time):
         return f"The booking slot for {date} at {time} is available."
     return f"Sorry, the booking slot for {date} at {time} is not available."
+
 
 @tool
 def add_new_booking(date: str, time: str, customer: str) -> str:
@@ -62,6 +74,7 @@ def add_new_booking(date: str, time: str, customer: str) -> str:
         return f"Booking confirmed for {customer} on {date} at {time}."
     return f"Booking slot {date} at {time} is not available or booking failed for {customer}."
 
+
 @tool
 def get_all_bookings_for_date(date: str) -> str:
     """
@@ -74,21 +87,34 @@ def get_all_bookings_for_date(date: str) -> str:
         str: String listing bookings or a 'no bookings found' message.
     """
     bookings = booking_system.get_bookings(date)
-    if not bookings: return f"No bookings found for {date}."
+    if not bookings:
+        return f"No bookings found for {date}."
     return f"Bookings for {date}: {json.dumps(bookings)}"
+
 
 class Inventory:
     def __init__(self):
-        self.stock: Dict[str, int] = {"skateboard": 20, "helmet": 30, "wheels": 50, "t-shirt": 25, "stickers": 100}
-    def check_stock(self, item: str) -> int: 
+        self.stock: Dict[str, int] = {
+            "skateboard": 20,
+            "helmet": 30,
+            "wheels": 50,
+            "t-shirt": 25,
+            "stickers": 100,
+        }
+
+    def check_stock(self, item: str) -> int:
         return self.stock.get(item.lower(), 0)
+
     def sell_item(self, item: str, quantity: int) -> bool:
         item_l = item.lower()
         if self.stock.get(item_l, 0) >= quantity:
             self.stock[item_l] -= quantity
             return True
         return False
+
+
 inventory = Inventory()
+
 
 @tool
 def get_item_inventory_level(item: str) -> str:
@@ -103,6 +129,7 @@ def get_item_inventory_level(item: str) -> str:
     """
     stock = inventory.check_stock(item)
     return f"Stock level for {item}: {stock}."
+
 
 @tool
 def sell_item_from_inventory(item: str, quantity: int) -> str:
@@ -121,28 +148,49 @@ def sell_item_from_inventory(item: str, quantity: int) -> str:
         return f"Sold {quantity} of {item}. Stock was {stock_before}, now {inventory.check_stock(item)}."
     return f"Not enough {item} in stock (available: {stock_before}). Sale failed."
 
+
 class EventSystem:
     def __init__(self):
-        self.events: List[Dict[str, str]] = [] 
+        self.events: List[Dict[str, str]] = []
+
     def add_event(self, event_name: str, date: str, description: str) -> bool:
-        self.events.append({"name": event_name, "date": date, "description": description})
+        self.events.append(
+            {"name": event_name, "date": date, "description": description}
+        )
         return True
+
     def list_events(self) -> List[Dict[str, str]]:
         return self.events
+
+
 event_system = EventSystem()
+
 
 class MaintenanceLog:
     def __init__(self):
-        self.log_entries: List[Dict[str,str]] = []
+        self.log_entries: List[Dict[str, str]] = []
         self.next_id = 1
+
     def add_entry(self, area: str, issue: str, reported_by: str) -> int:
         entry_id = self.next_id
-        self.log_entries.append({"id": entry_id, "area": area, "issue": issue, "reported_by": reported_by, "status": "reported"})
-        self.next_id +=1
+        self.log_entries.append(
+            {
+                "id": entry_id,
+                "area": area,
+                "issue": issue,
+                "reported_by": reported_by,
+                "status": "reported",
+            }
+        )
+        self.next_id += 1
         return entry_id
-    def view_log(self) -> List[Dict[str,str]]:
+
+    def view_log(self) -> List[Dict[str, str]]:
         return self.log_entries
+
+
 maintenance_log = MaintenanceLog()
+
 
 @tool
 def create_new_event(event_name: str, date: str, description: str) -> str:
@@ -158,7 +206,12 @@ def create_new_event(event_name: str, date: str, description: str) -> str:
         str: A confirmation message.
     """
     # TODO: Implement this tool using event_system.add_event
-    pass
+    event_system.add_event(event_name, date, description)
+
+    return (
+        f"Event '{event_name}' scheduled for {date} about '{description}' is created."
+    )
+
 
 @tool
 def list_upcoming_events() -> str:
@@ -169,7 +222,11 @@ def list_upcoming_events() -> str:
         str: A string representation of the list of events, or a message if no events are scheduled.
     """
     # TODO: Implement this tool using event_system.list_events
-    pass
+    events = event_system.list_events()
+    if not events:
+        return "No upcoming events scheduled."
+    return f"Upcoming events: {json.dumps(events)}"
+
 
 @tool
 def log_maintenance_request(area: str, issue_description: str, reported_by: str) -> str:
@@ -185,7 +242,9 @@ def log_maintenance_request(area: str, issue_description: str, reported_by: str)
         str: A confirmation message with the request ID.
     """
     # TODO: Implement this tool using maintenance_log.add_entry
-    pass
+    new_log = maintenance_log.add_entry(area, issue_description, reported_by)
+    return f"Maintenance request logged with ID: {new_log}"
+
 
 @tool
 def view_maintenance_log() -> str:
@@ -196,21 +255,28 @@ def view_maintenance_log() -> str:
         str: A string representation of the maintenance log, or a message if the log is empty.
     """
     # TODO: Implement this tool using maintenance_log.view_log
-    pass
+    logs = maintenance_log.view_log()
+    if not logs:
+        return "Maintenance log is empty."
+    return f"Maintenance Log Entries: {json.dumps(logs)}"
+
 
 @tool
-def submit_request_diagnosis(chosen_category: str, original_request_for_context: str) -> str:
+def submit_request_diagnosis(
+    chosen_category: str, original_request_for_context: str
+) -> str:
     """
     Submits the diagnosed category of a customer's request. This tool is called by the CustomerSupportAgent's LLM.
 
     Args:
         chosen_category (str): The category determined by the LLM.
         original_request_for_context (str): The original user request.
-    
+
     Returns:
         str: The chosen_category.
     """
     return chosen_category
+
 
 class CustomerSupportAgent(ToolCallingAgent):
     def __init__(self, model_to_use: OpenAIServerModel):
@@ -218,16 +284,16 @@ class CustomerSupportAgent(ToolCallingAgent):
             tools=[submit_request_diagnosis],
             model=model_to_use,
             name="customer_support_diagnoser",
-            description="Agent that analyzes a customer's request and categorizes its primary intent."
+            description="Agent that analyzes a customer's request and categorizes its primary intent.",
         )
         self.possible_categories = [
-            "Shop - Skateboard Inquiry", 
-            "Park - Session Booking Inquiry", 
-            "Park - List Bookings Inquiry", 
+            "Shop - Skateboard Inquiry",
+            "Park - Session Booking Inquiry",
+            "Park - List Bookings Inquiry",
             "Shop - Gear repair or replacement Inquiry",
-            "Park - Event Inquiry",             # NEW
-            "Park - Maintenance Request",       # NEW
-            "General Inquiry or Unknown"
+            "Park - Event Inquiry",  # NEW
+            "Park - Maintenance Request",  # NEW
+            "General Inquiry or Unknown",
         ]
 
     def get_llm_diagnosis(self, user_request: str) -> str:
@@ -238,87 +304,122 @@ class CustomerSupportAgent(ToolCallingAgent):
         Call 'submit_request_diagnosis' with your 'chosen_category' and the 'original_request_for_context'.
         Final text should be "Diagnosis submitted."
         """
-        _ = self.run(prompt) 
-        diagnosis_from_llm = "General Inquiry or Unknown" 
+        _ = self.run(prompt)
+        diagnosis_from_llm = "General Inquiry or Unknown"
         for step in self.memory.steps:
-            if hasattr(step, 'tool_calls') and step.tool_calls:
+            if hasattr(step, "tool_calls") and step.tool_calls:
                 for tc in step.tool_calls:
-                    if tc.name == 'submit_request_diagnosis':
-                        if hasattr(step, 'observations') and step.observations is not None:
+                    if tc.name == "submit_request_diagnosis":
+                        if (
+                            hasattr(step, "observations")
+                            and step.observations is not None
+                        ):
                             diagnosis_from_llm = str(step.observations)
                         break
-            if diagnosis_from_llm != "General Inquiry or Unknown" and diagnosis_from_llm in self.possible_categories:
+            if (
+                diagnosis_from_llm != "General Inquiry or Unknown"
+                and diagnosis_from_llm in self.possible_categories
+            ):
                 break
-        if diagnosis_from_llm not in self.possible_categories: return "General Inquiry or Unknown"
+        if diagnosis_from_llm not in self.possible_categories:
+            return "General Inquiry or Unknown"
         return diagnosis_from_llm
+
 
 class Orchestrator(ToolCallingAgent):
     def __init__(self, model_to_use: OpenAIServerModel):
         self.customer_support_agent = CustomerSupportAgent(model_to_use)
-        
+
         orchestrator_tools = [
-            check_booking_availability, 
-            add_new_booking, 
+            check_booking_availability,
+            add_new_booking,
             get_all_bookings_for_date,
             get_item_inventory_level,
             sell_item_from_inventory,
-            create_new_event,               # NEW
-            list_upcoming_events,           # NEW
-            log_maintenance_request,        # NEW
-            view_maintenance_log            # NEW
+            create_new_event,  # NEW
+            list_upcoming_events,  # NEW
+            log_maintenance_request,  # NEW
+            view_maintenance_log,  # NEW
         ]
         super().__init__(
             tools=orchestrator_tools,
             model=model_to_use,
             name="orchestrator",
-            description="Orchestrator for skate park, shop, events, and maintenance."
+            description="Orchestrator for skate park, shop, events, and maintenance.",
         )
 
     def _get_final_answer_from_orchestrator_memory(self) -> str:
         for step in reversed(self.memory.steps):
-            if hasattr(step, 'tool_calls') and step.tool_calls:
+            if hasattr(step, "tool_calls") and step.tool_calls:
                 for tc in step.tool_calls:
-                    if tc.name == 'final_answer':
-                        if hasattr(step, 'action_output') and step.action_output is not None:
+                    if tc.name == "final_answer":
+                        if (
+                            hasattr(step, "action_output")
+                            and step.action_output is not None
+                        ):
                             return str(step.action_output)
-                        elif hasattr(tc, 'arguments') and tc.arguments.get('answer') is not None:
-                             return str(tc.arguments.get('answer'))
-            if hasattr(step, 'observations') and step.observations is not None and \
-               (not (hasattr(step, 'tool_calls') and step.tool_calls and hasattr(step.tool_calls[0], 'name') and step.tool_calls[0].name == 'final_answer')):
+                        elif (
+                            hasattr(tc, "arguments")
+                            and tc.arguments.get("answer") is not None
+                        ):
+                            return str(tc.arguments.get("answer"))
+            if (
+                hasattr(step, "observations")
+                and step.observations is not None
+                and (
+                    not (
+                        hasattr(step, "tool_calls")
+                        and step.tool_calls
+                        and hasattr(step.tool_calls[0], "name")
+                        and step.tool_calls[0].name == "final_answer"
+                    )
+                )
+            ):
                 return str(step.observations)
         return "Orchestrator: Could not determine a final response."
 
     def handle_customer_request(self, user_request: str) -> str:
         print(f"\nOrchestrator received request: '{user_request}'")
-        
+
         diagnosis = self.customer_support_agent.get_llm_diagnosis(user_request)
         print(f"LLM Diagnosis from CustomerSupportAgent: '{diagnosis}'")
 
         self.memory.steps = []
-        
+
         # TODO: Learner needs to expand this prompt to handle the new diagnosis categories
         # and guide the LLM to use the new tools for events and maintenance.
         orchestrator_prompt = f"""
-        You are the main Orchestrator.
+        You are the main Orchestrator for skate part, shop, events, and maintenance.
+        You have received a customer request and a diagnosis from the CustomerSupportAgent.
         Customer request: "{user_request}"
-        Diagnosis: "{diagnosis}".
-        Available tools: {json.dumps([t.name for t in self.tools])}.
+        The request has been diagnosed by support aghent with the category: "{diagnosis}".
+        Based on diagnosis and user reqest, decide which of the avaliable tools to use to best help the customer. Available tools: {json.dumps([t.name for t in self.tools])}.
 
-        Based on the request and diagnosis, decide which tool to use.
-        - For "{self.customer_support_agent.possible_categories[0]}" (Skateboard Inquiry), use 'get_item_inventory_level' or 'sell_item_from_inventory'.
-        - For "{self.customer_support_agent.possible_categories[1]}" (Session Booking), use 'check_booking_availability' then 'add_new_booking'.
-        - For "{self.customer_support_agent.possible_categories[2]}" (List Bookings), use 'get_all_bookings_for_date'.
-        - For "{self.customer_support_agent.possible_categories[4]}" (Event Inquiry), use 'list_upcoming_events' or 'create_new_event' if details are provided for a new event.
-        - For "{self.customer_support_agent.possible_categories[5]}" (Maintenance Request), use 'log_maintenance_request' or 'view_maintenance_log'.
+        - For "{self.customer_support_agent.possible_categories[0]}" (Skateboard Inquiry): 
+        'get_item_inventory_level' help you to call items like 'skateboard', 'helmet' or 'wheels'. 
+        You can also use 'sell_item_from_inventory' if the customer wants to purchase an item and purchase details are clearly provided.
+        - For "{self.customer_support_agent.possible_categories[1]}" (Session Booking), attempt to extract date, time and customer name from "{user_request}". If all details are present, you might first 'check_booking_availability', then 'add_new_booking'. If details are missing, use 'final_answer' to ask for them.
+        - For "{self.customer_support_agent.possible_categories[2]}" (List Bookings), attempt to extract a date from "{user_request}". If a date is present, use 'get_all_bookings_for_date'. If no date, use 'final_answer' to ask for it.
+        - For "{self.customer_support_agent.possible_categories[4]}" (Event Inquiry)
+          If the request is about the create a new event and provide event name, date and description, use 'create_new_event'.
+          Otwerwise, ask for more details about the event to create to get the necessary information.
+          If request about existing events, use 'list_upcoming_events'.
+
+        - For "{self.customer_support_agent.possible_categories[5]}" (Maintenance Request):
+          If the request about viewing the maintenance log, use 'view_maintenance_log'.
+          If the request is about logging a new maintenance issue and provides area, issue description, and reporter name, use 'log_maintenance_request'.
+          Otwerwise, ask for more details about the maintenance issue to get the necessary information.
         
-        If diagnosis is "{self.customer_support_agent.possible_categories[3]}" (Gear repair), respond with 'final_answer': "Regarding your gear: please bring it to the shop for assessment."
-        If diagnosis is "{self.customer_support_agent.possible_categories[6]}" (Unknown/General) or info is missing for tools, use 'final_answer' to ask for clarification or state inability to help.
+        If the diagnosis is "{self.customer_support_agent.possible_categories[3]}" (Gear repair), provide a standard helpful response using the 'final_answer' tool: "Regarding your gear concern about '{user_request}': Please bring the item to our shop for a detailed assessment, or call us to discuss repair or replacement options."
+        If the diagnosis is "{self.customer_support_agent.possible_categories[6]}" (Unknown/General), or if necessary information for other tools is missing and you need to ask for clarification, use the 'final_answer' tool with an appropriate message like: "I'm not entirely sure how to help with that. Could you please rephrase or provide more details for '{user_request}'?"
 
-        Extract arguments for tools from "{user_request}".
-        Call tools sequentially if needed. Conclude with 'final_answer'.
+        Extract necessary arguments for any tool you call (like date, time, item, customer name, event_name, description, area, issue_description, reported_by) directly from the original user_request: "{user_request}".
+        If a tool is used, its output (your observation) will be provided to you. You might need to call tools sequentially.
+        Conclude by calling the 'final_answer' tool with your complete response to the customer.
         """
         _ = self.run(orchestrator_prompt)
         return self._get_final_answer_from_orchestrator_memory()
+
 
 orchestrator = Orchestrator(model)
 
@@ -331,7 +432,7 @@ requests = [
     "What events are happening next month?",
     "The main ramp has a loose panel, someone could get hurt!",
     "I'd like to schedule a 'Beginner Skate Workshop' on 2024-09-15, it's for all ages.",
-    "Show me the maintenance log." 
+    "Show me the maintenance log.",
 ]
 
 for i, req in enumerate(requests):

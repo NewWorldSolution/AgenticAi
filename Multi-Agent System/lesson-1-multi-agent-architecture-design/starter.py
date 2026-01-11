@@ -3,125 +3,177 @@ import networkx as nx
 import numpy as np
 
 
-
-
-def create_diagram(title, nodes, edges, node_labels=None, node_types=None, edge_labels=None):
+def create_diagram(
+    title, nodes, edges, node_labels=None, node_types=None, edge_labels=None
+):
     graph = nx.DiGraph()
-    
+
     graph.add_nodes_from(nodes)
     graph.add_edges_from(edges)
-    
+
     if node_labels is None:
         node_labels = {node: node for node in nodes}
     if node_types is None:
-        node_types = {node: 'agent' for node in nodes}
+        node_types = {node: "agent" for node in nodes}
     if edge_labels is None:
         edge_labels = {}
 
     plt.figure(figsize=(12, 8))
-    plt.title(title, fontsize=16, fontweight='bold', pad=20)
-    
+    plt.title(title, fontsize=16, fontweight="bold", pad=20)
+
     pos = {}
     horizontal_spacing = 1.0
     vertical_spacing = 0.7
-    
+
     pos["Visitor Input"] = (0, 0)
     pos["Language Identification"] = (horizontal_spacing, 0)
-    pos["Arrernte Language Specialist"] = (2*horizontal_spacing, vertical_spacing)
-    pos["Pitjantjatjara Language Specialist"] = (2*horizontal_spacing, -vertical_spacing)
-    pos["Knowledge Base Lookup"] = (3*horizontal_spacing, 0)
-    
+    pos["Arrernte Language Specialist"] = (2 * horizontal_spacing, vertical_spacing)
+    pos["Pitjantjatjara Language Specialist"] = (
+        2 * horizontal_spacing,
+        -vertical_spacing,
+    )
+    pos["Knowledge Base Lookup"] = (3 * horizontal_spacing, 0)
+
     node_colors = []
     node_shapes = []
     node_sizes = []
-    
+
     for node in nodes:
-        node_type = node_types.get(node, 'agent')
-        
-        if node_type == 'agent':
+        node_type = node_types.get(node, "agent")
+
+        if node_type == "agent":
             node_colors.append("#6495ED")
-            node_shapes.append('o')
+            node_shapes.append("o")
             node_sizes.append(2800)
-        elif node_type == 'tool':
+        elif node_type == "tool":
             node_colors.append("#FFD700")
-            node_shapes.append('s')
+            node_shapes.append("s")
             node_sizes.append(2600)
-        elif node_type == 'user':
+        elif node_type == "user":
             node_colors.append("#FF6347")
-            node_shapes.append('d')
+            node_shapes.append("d")
             node_sizes.append(2400)
-        elif node_type == 'data':
+        elif node_type == "data":
             node_colors.append("#90EE90")
-            node_shapes.append('h')
+            node_shapes.append("h")
             node_sizes.append(2500)
         else:
             node_colors.append("#C0C0C0")
-            node_shapes.append('p')
+            node_shapes.append("p")
             node_sizes.append(2300)
 
     for i, node in enumerate(nodes):
-        nx.draw_networkx_nodes(graph, pos, 
-                             nodelist=[node],
-                             node_color=[node_colors[i]], 
-                             node_shape=node_shapes[i],
-                             node_size=node_sizes[i],
-                             edgecolors='black', 
-                             linewidths=1.5, 
-                             alpha=0.9)
-    
-    nx.draw_networkx_edges(graph, pos, 
-                         edge_color="black", 
-                         arrowsize=25,
-                         width=2.0, 
-                         alpha=0.9, 
-                         arrowstyle='-|>', 
-                         connectionstyle="arc3,rad=0.1")
+        nx.draw_networkx_nodes(
+            graph,
+            pos,
+            nodelist=[node],
+            node_color=[node_colors[i]],
+            node_shape=node_shapes[i],
+            node_size=node_sizes[i],
+            edgecolors="black",
+            linewidths=1.5,
+            alpha=0.9,
+        )
+
+    nx.draw_networkx_edges(
+        graph,
+        pos,
+        edge_color="black",
+        arrowsize=25,
+        width=2.0,
+        alpha=0.9,
+        arrowstyle="-|>",
+        connectionstyle="arc3,rad=0.1",
+    )
 
     for node, (x, y) in pos.items():
-        plt.text(x, y, node_labels[node], 
-                fontsize=11, 
-                ha='center', 
-                va='center',
-                fontweight='bold',
-                bbox=dict(facecolor='white', 
-                         alpha=0.8, 
-                         edgecolor='lightgray', 
-                         boxstyle='round,pad=0.5'))
-                         
+        plt.text(
+            x,
+            y,
+            node_labels[node],
+            fontsize=11,
+            ha="center",
+            va="center",
+            fontweight="bold",
+            bbox=dict(
+                facecolor="white",
+                alpha=0.8,
+                edgecolor="lightgray",
+                boxstyle="round,pad=0.5",
+            ),
+        )
+
     if edge_labels:
         for edge, label in edge_labels.items():
             x1, y1 = pos[edge[0]]
             x2, y2 = pos[edge[1]]
             x = (x1 + x2) / 2
             y = (y1 + y2) / 2 + 0.15
-            plt.text(x, y, label, 
-                    fontsize=12, 
-                    ha='center',
-                    va='center',
-                    fontweight='bold',
-                    color='darkblue',
-                    bbox=dict(facecolor='white', 
-                             alpha=0.9,
-                             edgecolor='blue',
-                             boxstyle='round,pad=0.3'))
+            plt.text(
+                x,
+                y,
+                label,
+                fontsize=12,
+                ha="center",
+                va="center",
+                fontweight="bold",
+                color="darkblue",
+                bbox=dict(
+                    facecolor="white",
+                    alpha=0.9,
+                    edgecolor="blue",
+                    boxstyle="round,pad=0.3",
+                ),
+            )
 
     legend_elements = [
-        plt.Line2D([0], [0], marker='o', color='w', markerfacecolor="#6495ED", markersize=15, label='Agent'),
-        plt.Line2D([0], [0], marker='s', color='w', markerfacecolor="#FFD700", markersize=15, label='Tool/Resource'),
-        plt.Line2D([0], [0], marker='d', color='w', markerfacecolor="#FF6347", markersize=15, label='User Interface'),
-        plt.Line2D([0], [0], marker='h', color='w', markerfacecolor="#90EE90", markersize=15, label='Data Component')
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="#6495ED",
+            markersize=15,
+            label="Agent",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="s",
+            color="w",
+            markerfacecolor="#FFD700",
+            markersize=15,
+            label="Tool/Resource",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="d",
+            color="w",
+            markerfacecolor="#FF6347",
+            markersize=15,
+            label="User Interface",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="h",
+            color="w",
+            markerfacecolor="#90EE90",
+            markersize=15,
+            label="Data Component",
+        ),
     ]
-    plt.legend(handles=legend_elements, loc='upper right', fontsize=12)
+    plt.legend(handles=legend_elements, loc="upper right", fontsize=12)
 
     plt.axis("off")
     plt.tight_layout()
-    
+
     # Save the diagram as an image file
-    filename = title.replace(' ', '_').replace(':', '') + '.png'
-    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    filename = title.replace(" ", "_").replace(":", "") + ".png"
+    plt.savefig(filename, dpi=300, bbox_inches="tight")
     print(f"Diagram saved as: {filename}")
     plt.close()
-
 
 
 """ 
@@ -157,8 +209,12 @@ def extended_uluru_exercise():
         "Pitjantjatjara Language Specialist",
         "Knowledge Base Lookup",
         # TODO: Add your new nodes here
+        "Translation Verification Agent",
+        "Multimodal Media Tool",
+        "Feedback Collector",
+        "Cultural Sensitivity Checker",
     ]
-    
+
     edges = [
         ("Visitor Input", "Language Identification"),
         ("Language Identification", "Arrernte Language Specialist"),
@@ -171,8 +227,18 @@ def extended_uluru_exercise():
         ("Pitjantjatjara Language Specialist", "Language Identification"),
         ("Language Identification", "Visitor Input"),
         # TODO: Add your new edges here
+        ("Arrernte Language Specialist", "Translation Verification Agent"),
+        ("Pitjantjatjara Language Specialist", "Translation Verification Agent"),
+        ("Translation Verification Agent", "Language Identification"),
+        ("Knowledge Base Lookup", "Multimodal Media Tool"),
+        ("Multimodal Media Tool", "Arrernte Language Specialist"),
+        ("Multimodal Media Tool", "Pitjantjatjara Language Specialist"),
+        ("Knowledge Base Lookup", "Cultural Sensitivity Checker"),
+        ("Cultural Sensitivity Checker", "Arrernte Language Specialist"),
+        ("Cultural Sensitivity Checker", "Pitjantjatjara Language Specialist"),
+        ("Feedback Collector", "Visitor Input"),
     ]
-    
+
     node_types = {
         "Visitor Input": "user",
         "Language Identification": "tool",
@@ -180,11 +246,76 @@ def extended_uluru_exercise():
         "Pitjantjatjara Language Specialist": "agent",
         "Knowledge Base Lookup": "tool",
         # TODO: Add types for your new nodes here
+        "Translation Verification Agent": "agent",
+        "Multimodal Media Tool": "tool",
+        "Feedback Collector": "tool",
+        "Cultural Sensitivity Checker": "tool",
     }
 
     edge_labels = {
         ("Language Identification", "Visitor Input"): "Formatted Response",
         # TODO: Add new edge labels here
+        # Language Identification to Specialists
+        (
+            "Language Identification",
+            "Arrernte Language Specialist",
+        ): "Detected Language: Arrernte",
+        (
+            "Language Identification",
+            "Pitjantjatjara Language Specialist",
+        ): "Detected Language: Pitjantjatjara",
+        ("Arrernte Language Specialist", "Knowledge Base Lookup"): "Knowledge Request",
+        (
+            "Pitjantjatjara Language Specialist",
+            "Knowledge Base Lookup",
+        ): "Knowledge Request",
+        ("Knowledge Base Lookup", "Arrernte Language Specialist"): "Knowledge Response",
+        (
+            "Knowledge Base Lookup",
+            "Pitjantjatjara Language Specialist",
+        ): "Knowledge Response",
+        (
+            "Arrernte Language Specialist",
+            "Cultural Sensitivity Checker",
+        ): "Cultural Review Request",
+        (
+            "Pitjantjatjara Language Specialist",
+            "Cultural Sensitivity Checker",
+        ): "Cultural Review Request",
+        (
+            "Cultural Sensitivity Checker",
+            "Arrernte Language Specialist",
+        ): "Culturally Approved Knowledge / Constraints and Redactions",
+        (
+            "Cultural Sensitivity Checker",
+            "Pitjantjatjara Language Specialist",
+        ): "Culturally Approved Knowledge / Constraints and Redactions",
+        (
+            "Arrernte Language Specialist",
+            "Translation Verification Agent",
+        ): "Translation for Verification",
+        (
+            "Pitjantjatjara Language Specialist",
+            "Translation Verification Agent",
+        ): "Translation for Verification",
+        (
+            "Translation Verification Agent",
+            "Language Identification",
+        ): "Verified Translation",
+        # Multimodal enrichment
+        ("Knowledge Base Lookup", "Multimodal Media Tool"): "Contextual Media Request",
+        (
+            "Multimodal Media Tool",
+            "Arrernte Language Specialist",
+        ): "Relevant Media Response",
+        (
+            "Multimodal Media Tool",
+            "Pitjantjatjara Language Specialist",
+        ): "Relevant Media Response",
+        ("Visitor Input", "Feedback Collector"): "User Feedback",
+        ("Feedback Collector", "Visitor Input"): "Feedback Acknowledgment / UX Update",
+        # Final Output
+        ("Language Identification", "Visitor Input"): "Final Response with Media",
     }
 
     create_diagram(
@@ -193,7 +324,9 @@ def extended_uluru_exercise():
         edges,
         None,
         node_types,
-        edge_labels
+        edge_labels,
     )
+
+
 if __name__ == "__main__":
     extended_uluru_exercise()
