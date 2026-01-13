@@ -7,7 +7,7 @@ Welcome to the starter code repository for the **Munder Difflin Paper Company Mu
 You’ve been hired as an AI consultant by Munder Difflin Paper Company, a fictional enterprise looking to modernize their workflows. They need a smart, modular **multi-agent system** to automate:
 
 - **Inventory checks** and restocking decisions
-- **Quote generation** for incoming sales inquiries
+- **Quote generation** for incoming sales inquFroniries
 - **Order fulfillment** including supplier logistics and transactions
 
 Your solution must use a maximum of **5 agents** and process inputs and outputs entirely via **text-based communication**.
