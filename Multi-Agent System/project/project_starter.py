@@ -155,10 +155,6 @@ class TransactionRecord:
     transaction_date: str  # ISO 8601 string
 
 
-def money2(x: float) -> float:
-    return round(x, 2)
-
-
 FULFILLMENT_PRIORITY = {
     FulfillmentStatus.INVALID: 3,
     FulfillmentStatus.NOT_FULFILLED: 2,
@@ -959,9 +955,35 @@ Use only the inventory tools to answer questions about current stock.
 Return factual, structured output. Do not guess. Do not write to the DB.
 """
 PA_SYSTEM_PROMPT = """
-You are the Pricing Agent (PA). You are read-only.
-Use quote history as optional reference and compute pricing + rationale.
-Always produce a unit price, discount rate, and total. Do not write to the DB.
+You are the Pricing Agent (PA) for Beaver’s Choice Paper Company.
+You are strictly READ-ONLY and must never write to the database.
+
+TASK:
+Given a line item, quantity, and a base unit price (from catalog),
+use quote history (via pa_search_quote_history) as retrieval context to recommend a discount.
+
+MANDATORY TOOL USE:
+You MUST call pa_search_quote_history at least once per request.
+
+RETURN FORMAT:
+Return ONLY a Python dictionary with exactly these keys:
+{
+  "discount_rate": float,   # between 0.0 and 0.30
+  "rationale": str          # short explanation referencing history patterns
+}
+
+RULES:
+- Do NOT invent or output unit_price. The orchestrator provides base_unit_price.
+- Do NOT compute totals.
+- Prefer discount_rate based on: quantity, job/event/size context, and similarity to past quotes.
+- If history is weak/empty, use a conservative discount based on quantity:
+  <100 -> 0.00
+  100-499 -> 0.05
+  500-999 -> 0.10
+  1000+ -> 0.15
+- Keep discount_rate <= 0.30.
+
+Return ONLY the dictionary (no extra text).
 """
 
 TLA_SYSTEM_PROMPT = """
@@ -1021,7 +1043,11 @@ transactions_logistics_agent = ToolCallingAgent(
     ],
     system_prompt=TLA_SYSTEM_PROMPT,
 )
-
+def get_catalog_item(item_name: str) -> Optional[Dict]:
+    for p in paper_supplies:
+        if p["item_name"].lower() == item_name.lower():
+            return p
+    return None
 
 class FrontDeskOrchestratorAgent:
     """
@@ -1074,7 +1100,7 @@ class FrontDeskOrchestratorAgent:
         # Step 1: Process each line item in the request
         for item in parsed.items:
             # 1) Validate item (e.g., check if item_name is valid)
-            if item.quantity <= 0 or not item.item_name:
+            if item.quantity <= 0 or not item.item_name:         
                 line_responses.append(
                     LineResponse(
                         item_name=item.item_name or "UNKNOWN",
@@ -1087,6 +1113,22 @@ class FrontDeskOrchestratorAgent:
                 )
                 line_statuses.append(FulfillmentStatus.INVALID)
                 continue
+            catalog_item = get_catalog_item(item.item_name)
+            if not catalog_item:
+                line_responses.append(
+                    LineResponse(
+                        item_name=item.item_name,
+                        quantity=item.quantity,
+                        status=FulfillmentStatus.INVALID,
+                        delivery_date=parsed.request_date,
+                        total_price=0.0,
+                        reason="Unknown item (not in catalog).",
+                    )
+                )
+                line_statuses.append(FulfillmentStatus.INVALID)
+                continue
+
+            base_unit_price = float(catalog_item["unit_price"])
             # 1B. Inventory Agent (IA)
             ia_reply = self.inventory_agent.run(
                 f"Get stock for item '{item.item_name}' as of {parsed.request_date}. "
@@ -1105,24 +1147,36 @@ class FrontDeskOrchestratorAgent:
 
             # 1C. Pricing Agent (PA)
             # (read-only)
+            search_terms = [
+                item.item_name.lower(),
+                (parsed.job or "").lower(),
+                (parsed.event or "").lower(),
+                (parsed.need_size or "").lower(),
+            ]
+   
+            
             pa_reply = self.pricing_agent.run(
-                f"Compute pricing for item '{item.item_name}' "
-                f"with quantity {item.quantity}. "
-                f"Return a Python dict with unit_price, discount_rate, total_price, rationale."
+                "You must call pa_search_quote_history using these search_terms and then recommend a discount.\n"
+                f"item_name={item.item_name}\n"
+                f"quantity={item.quantity}\n"
+                f"base_unit_price={base_unit_price}\n"
+                f"search_terms={search_terms}\n"
+                "Return ONLY: {'discount_rate': float, 'rationale': str}"
             )
 
             pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
-            unit_price = float(pa_data["unit_price"])
             discount_rate = float(pa_data["discount_rate"])
+            discount_rate = max(0.0, min(discount_rate, 0.30))  # safety clamp
 
-            subtotal = round(unit_price * item.quantity, 2)
+
+            subtotal = round(base_unit_price * item.quantity, 2)
             discount_amount = round(subtotal * discount_rate, 2)
             total_price = round(subtotal - discount_amount, 2)
 
             pricing = PricingResult(
                 item_name=item.item_name,
                 requested_qty=item.quantity,
-                unit_price=unit_price,
+                unit_price=base_unit_price,
                 discount_rate=discount_rate,
                 subtotal=subtotal,
                 discount_amount=discount_amount,
@@ -1134,7 +1188,7 @@ class FrontDeskOrchestratorAgent:
             tla_reply = self.transactions_logistics_agent.run(
                 f"For item '{item.item_name}', quantity {item.quantity}, "
                 f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
-                f"Return a Python dict with earliest_delivery_date, status, reason."
+                f"Return a Python dict with earliest_delivery_date and reason."
             )
 
             tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
@@ -1234,7 +1288,7 @@ fdo = FrontDeskOrchestratorAgent(
     inventory_agent, pricing_agent, transactions_logistics_agent
 )
 # Run your test scenarios by writing them here. Make sure to keep track of them.
-# Github status test now last test
+
 
 def run_test_scenarios():
 
