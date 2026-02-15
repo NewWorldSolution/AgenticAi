@@ -3,6 +3,7 @@ import sqlite3
 import json
 import argparse
 from datetime import datetime
+import sys
 
 DB_NAME = "checklist.db"
 
@@ -148,6 +149,7 @@ def main():
             "blocked",
             "note",
             "export",
+            "rename",
         ],
     )
     parser.add_argument("arg1", nargs="?")
@@ -167,6 +169,19 @@ def main():
         add_note(int(args.arg1), args.arg2)
     elif args.command == "export":
         export_json(args.arg1)
+    elif args.command == "rename":
+        item_id = int(sys.argv[2])
+        new_title = " ".join(sys.argv[3:])
+        rename_item(item_id, new_title)
+
+
+def rename_item(item_id, new_title):
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute("UPDATE checklist SET title = ? WHERE id = ?", (new_title, item_id))
+    conn.commit()
+    conn.close()
+    print(f"✏️ Item #{item_id} renamed.")
 
 
 if __name__ == "__main__":

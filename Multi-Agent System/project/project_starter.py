@@ -1,3 +1,14 @@
+from __future__ import annotations
+from email import message
+from multiprocessing import Value
+from optparse import Option
+from queue import Full
+from re import I
+import re
+from tkinter import E
+import unittest
+from httpx import request
+from openai import OpenAI
 import pandas as pd
 import numpy as np
 import os
@@ -6,72 +17,280 @@ import dotenv
 import ast
 from sqlalchemy.sql import text
 from datetime import datetime, timedelta
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 from sqlalchemy import create_engine, Engine
+from smolagents import (
+    ToolCallingAgent,
+    OpenAIServerModel,
+    tool,
+)
+from dataclasses import dataclass, field
+from enum import Enum
+
 
 # Create an SQLite database
 db_engine = create_engine("sqlite:///munder_difflin.db")
 
-# List containing the different kinds of papers 
+dotenv.load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+base_url = os.getenv("OPENAI_BASE_URL")
+model = OpenAIServerModel(
+    api_key=openai_api_key,
+    api_base=base_url,
+    model_id="gpt-4o-mini",
+)
+
+
+class Intent(str, Enum):
+    QUOTE = "QUOTE"
+    ORDER = "ORDER"
+
+
+class TransactionType(str, Enum):
+    STOCK_ORDERS = "stock_orders"
+    SALES = "sales"
+
+
+class FulfillmentStatus(str, Enum):
+    FULFILLED = "FULFILLED"  # can meet requested_by or no requested_by constraint
+    NOT_FULFILLED = (
+        "NOT_FULFILLED"  # cannot meet requested_by => counter-offer returned
+    )
+    INVALID = "INVALID"  # missing fields, or unrecognized items
+
+
+@dataclass(frozen=True)
+class LineItem:
+    raw_fragment: str  # the text chunk we extracted this from
+    item_name: str  # normalized to a catalog name when possible
+    quantity: int
+    in_catalog: Optional[bool] = None
+    alternatives: List[str] = field(
+        default_factory=list
+    )  # filled only if recognized is False
+
+
+@dataclass(frozen=True)
+class ParsedRequest:
+    raw_text: str
+    request_date: str  # ISO YYYY-MM-DD
+    intent: Intent
+    items: List[LineItem] = field(default_factory=list)
+    job: Optional[str] = None
+    need_size: Optional[str] = None
+    event: Optional[str] = None
+    requested_by: Optional[str] = None
+    missing_fields: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class InventoryContext:
+    item_name: str
+    as_of_date: str  # ISO YYYY-MM-DD
+    available_qty: int
+    requested_qty: int
+    shortage_qty: int
+    in_catalog: bool
+
+
+@dataclass(frozen=True)
+class PricingResult:
+    item_name: str
+    requested_qty: int
+    unit_price: float
+    discount_rate: float  # 0.0 - 1.0
+    subtotal: float
+    discount_amount: float
+    total_price: float
+    rationale: str
+
+
+@dataclass(frozen=True)
+class LogisticsResult:
+    item_name: str
+    request_date: str  # ISO YYYY-MM-DD
+    earliest_delivery_date: str
+    status: FulfillmentStatus
+    reason: Optional[str] = None  # Why not fulfilled
+
+
+@dataclass(frozen=True)
+class TransactionPlan:
+    item_name: str
+
+    sales_qty: int
+    sales_total_price: float
+    sales_date: str  # ISO YYYY-MM-DD
+
+    create_reorder: bool
+    reorder_qty: int = 0
+    reorder_date: Optional[str] = None  # ISO YYYY-MM-DD
+    reorder_total_cost: float = 0.00
+
+
+@dataclass(frozen=True)
+class LineResponse:
+    item_name: str
+    quantity: int
+    status: FulfillmentStatus
+    delivery_date: str  # ISO YYYY-MM-DD
+    total_price: float
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SystemResponse:
+    intent: Intent
+    overall_status: FulfillmentStatus
+    lines: List[LineResponse]
+    message: str
+
+
+@dataclass(frozen=True)
+class TransactionRecord:
+    item_name: str
+    transaction_type: TransactionType  # 'stock_orders' or 'sales'
+    units: int  # Quantity involved
+    price: float  # Total price for the transaction
+    transaction_date: str  # ISO 8601 string
+
+
+def money2(x: float) -> float:
+    return round(x, 2)
+
+
+FULFILLMENT_PRIORITY = {
+    FulfillmentStatus.INVALID: 3,
+    FulfillmentStatus.NOT_FULFILLED: 2,
+    FulfillmentStatus.FULFILLED: 1,
+}
+
+
+def aggregate_overall_status(
+    line_statuses: list[FulfillmentStatus],
+) -> FulfillmentStatus:
+    """
+    INVALID > NOT_FULFILLED > FULFILLED
+    """
+    return max(line_statuses, key=lambda s: FULFILLMENT_PRIORITY[s])
+
+
+# List containing the different kinds of papers
 paper_supplies = [
     # Paper Types (priced per sheet unless specified)
-    {"item_name": "A4 paper",                         "category": "paper",        "unit_price": 0.05},
-    {"item_name": "Letter-sized paper",              "category": "paper",        "unit_price": 0.06},
-    {"item_name": "Cardstock",                        "category": "paper",        "unit_price": 0.15},
-    {"item_name": "Colored paper",                    "category": "paper",        "unit_price": 0.10},
-    {"item_name": "Glossy paper",                     "category": "paper",        "unit_price": 0.20},
-    {"item_name": "Matte paper",                      "category": "paper",        "unit_price": 0.18},
-    {"item_name": "Recycled paper",                   "category": "paper",        "unit_price": 0.08},
-    {"item_name": "Eco-friendly paper",               "category": "paper",        "unit_price": 0.12},
-    {"item_name": "Poster paper",                     "category": "paper",        "unit_price": 0.25},
-    {"item_name": "Banner paper",                     "category": "paper",        "unit_price": 0.30},
-    {"item_name": "Kraft paper",                      "category": "paper",        "unit_price": 0.10},
-    {"item_name": "Construction paper",               "category": "paper",        "unit_price": 0.07},
-    {"item_name": "Wrapping paper",                   "category": "paper",        "unit_price": 0.15},
-    {"item_name": "Glitter paper",                    "category": "paper",        "unit_price": 0.22},
-    {"item_name": "Decorative paper",                 "category": "paper",        "unit_price": 0.18},
-    {"item_name": "Letterhead paper",                 "category": "paper",        "unit_price": 0.12},
-    {"item_name": "Legal-size paper",                 "category": "paper",        "unit_price": 0.08},
-    {"item_name": "Crepe paper",                      "category": "paper",        "unit_price": 0.05},
-    {"item_name": "Photo paper",                      "category": "paper",        "unit_price": 0.25},
-    {"item_name": "Uncoated paper",                   "category": "paper",        "unit_price": 0.06},
-    {"item_name": "Butcher paper",                    "category": "paper",        "unit_price": 0.10},
-    {"item_name": "Heavyweight paper",                "category": "paper",        "unit_price": 0.20},
-    {"item_name": "Standard copy paper",              "category": "paper",        "unit_price": 0.04},
-    {"item_name": "Bright-colored paper",             "category": "paper",        "unit_price": 0.12},
-    {"item_name": "Patterned paper",                  "category": "paper",        "unit_price": 0.15},
-
+    {"item_name": "A4 paper", "category": "paper", "unit_price": 0.05},
+    {"item_name": "Letter-sized paper", "category": "paper", "unit_price": 0.06},
+    {"item_name": "Cardstock", "category": "paper", "unit_price": 0.15},
+    {"item_name": "Colored paper", "category": "paper", "unit_price": 0.10},
+    {"item_name": "Glossy paper", "category": "paper", "unit_price": 0.20},
+    {"item_name": "Matte paper", "category": "paper", "unit_price": 0.18},
+    {"item_name": "Recycled paper", "category": "paper", "unit_price": 0.08},
+    {"item_name": "Eco-friendly paper", "category": "paper", "unit_price": 0.12},
+    {"item_name": "Poster paper", "category": "paper", "unit_price": 0.25},
+    {"item_name": "Banner paper", "category": "paper", "unit_price": 0.30},
+    {"item_name": "Kraft paper", "category": "paper", "unit_price": 0.10},
+    {"item_name": "Construction paper", "category": "paper", "unit_price": 0.07},
+    {"item_name": "Wrapping paper", "category": "paper", "unit_price": 0.15},
+    {"item_name": "Glitter paper", "category": "paper", "unit_price": 0.22},
+    {"item_name": "Decorative paper", "category": "paper", "unit_price": 0.18},
+    {"item_name": "Letterhead paper", "category": "paper", "unit_price": 0.12},
+    {"item_name": "Legal-size paper", "category": "paper", "unit_price": 0.08},
+    {"item_name": "Crepe paper", "category": "paper", "unit_price": 0.05},
+    {"item_name": "Photo paper", "category": "paper", "unit_price": 0.25},
+    {"item_name": "Uncoated paper", "category": "paper", "unit_price": 0.06},
+    {"item_name": "Butcher paper", "category": "paper", "unit_price": 0.10},
+    {"item_name": "Heavyweight paper", "category": "paper", "unit_price": 0.20},
+    {"item_name": "Standard copy paper", "category": "paper", "unit_price": 0.04},
+    {"item_name": "Bright-colored paper", "category": "paper", "unit_price": 0.12},
+    {"item_name": "Patterned paper", "category": "paper", "unit_price": 0.15},
     # Product Types (priced per unit)
-    {"item_name": "Paper plates",                     "category": "product",      "unit_price": 0.10},  # per plate
-    {"item_name": "Paper cups",                       "category": "product",      "unit_price": 0.08},  # per cup
-    {"item_name": "Paper napkins",                    "category": "product",      "unit_price": 0.02},  # per napkin
-    {"item_name": "Disposable cups",                  "category": "product",      "unit_price": 0.10},  # per cup
-    {"item_name": "Table covers",                     "category": "product",      "unit_price": 1.50},  # per cover
-    {"item_name": "Envelopes",                        "category": "product",      "unit_price": 0.05},  # per envelope
-    {"item_name": "Sticky notes",                     "category": "product",      "unit_price": 0.03},  # per sheet
-    {"item_name": "Notepads",                         "category": "product",      "unit_price": 2.00},  # per pad
-    {"item_name": "Invitation cards",                 "category": "product",      "unit_price": 0.50},  # per card
-    {"item_name": "Flyers",                           "category": "product",      "unit_price": 0.15},  # per flyer
-    {"item_name": "Party streamers",                  "category": "product",      "unit_price": 0.05},  # per roll
-    {"item_name": "Decorative adhesive tape (washi tape)", "category": "product", "unit_price": 0.20},  # per roll
-    {"item_name": "Paper party bags",                 "category": "product",      "unit_price": 0.25},  # per bag
-    {"item_name": "Name tags with lanyards",          "category": "product",      "unit_price": 0.75},  # per tag
-    {"item_name": "Presentation folders",             "category": "product",      "unit_price": 0.50},  # per folder
-
+    {
+        "item_name": "Paper plates",
+        "category": "product",
+        "unit_price": 0.10,
+    },  # per plate
+    {"item_name": "Paper cups", "category": "product", "unit_price": 0.08},  # per cup
+    {
+        "item_name": "Paper napkins",
+        "category": "product",
+        "unit_price": 0.02,
+    },  # per napkin
+    {
+        "item_name": "Disposable cups",
+        "category": "product",
+        "unit_price": 0.10,
+    },  # per cup
+    {
+        "item_name": "Table covers",
+        "category": "product",
+        "unit_price": 1.50,
+    },  # per cover
+    {
+        "item_name": "Envelopes",
+        "category": "product",
+        "unit_price": 0.05,
+    },  # per envelope
+    {
+        "item_name": "Sticky notes",
+        "category": "product",
+        "unit_price": 0.03,
+    },  # per sheet
+    {"item_name": "Notepads", "category": "product", "unit_price": 2.00},  # per pad
+    {
+        "item_name": "Invitation cards",
+        "category": "product",
+        "unit_price": 0.50,
+    },  # per card
+    {"item_name": "Flyers", "category": "product", "unit_price": 0.15},  # per flyer
+    {
+        "item_name": "Party streamers",
+        "category": "product",
+        "unit_price": 0.05,
+    },  # per roll
+    {
+        "item_name": "Decorative adhesive tape (washi tape)",
+        "category": "product",
+        "unit_price": 0.20,
+    },  # per roll
+    {
+        "item_name": "Paper party bags",
+        "category": "product",
+        "unit_price": 0.25,
+    },  # per bag
+    {
+        "item_name": "Name tags with lanyards",
+        "category": "product",
+        "unit_price": 0.75,
+    },  # per tag
+    {
+        "item_name": "Presentation folders",
+        "category": "product",
+        "unit_price": 0.50,
+    },  # per folder
     # Large-format items (priced per unit)
-    {"item_name": "Large poster paper (24x36 inches)", "category": "large_format", "unit_price": 1.00},
-    {"item_name": "Rolls of banner paper (36-inch width)", "category": "large_format", "unit_price": 2.50},
-
+    {
+        "item_name": "Large poster paper (24x36 inches)",
+        "category": "large_format",
+        "unit_price": 1.00,
+    },
+    {
+        "item_name": "Rolls of banner paper (36-inch width)",
+        "category": "large_format",
+        "unit_price": 2.50,
+    },
     # Specialty papers
-    {"item_name": "100 lb cover stock",               "category": "specialty",    "unit_price": 0.50},
-    {"item_name": "80 lb text paper",                 "category": "specialty",    "unit_price": 0.40},
-    {"item_name": "250 gsm cardstock",                "category": "specialty",    "unit_price": 0.30},
-    {"item_name": "220 gsm poster paper",             "category": "specialty",    "unit_price": 0.35},
+    {"item_name": "100 lb cover stock", "category": "specialty", "unit_price": 0.50},
+    {"item_name": "80 lb text paper", "category": "specialty", "unit_price": 0.40},
+    {"item_name": "250 gsm cardstock", "category": "specialty", "unit_price": 0.30},
+    {"item_name": "220 gsm poster paper", "category": "specialty", "unit_price": 0.35},
 ]
 
 # Given below are some utility functions you can use to implement your multi-agent system
 
-def generate_sample_inventory(paper_supplies: list, coverage: float = 0.4, seed: int = 137) -> pd.DataFrame:
+
+def generate_sample_inventory(
+    paper_supplies: list, coverage: float = 0.4, seed: int = 137
+) -> pd.DataFrame:
     """
     Generate inventory for exactly a specified percentage of items from the full paper supply list.
 
@@ -104,9 +323,7 @@ def generate_sample_inventory(paper_supplies: list, coverage: float = 0.4, seed:
 
     # Randomly select item indices without replacement
     selected_indices = np.random.choice(
-        range(len(paper_supplies)),
-        size=num_items,
-        replace=False
+        range(len(paper_supplies)), size=num_items, replace=False
     )
 
     # Extract selected items from paper_supplies list
@@ -115,18 +332,23 @@ def generate_sample_inventory(paper_supplies: list, coverage: float = 0.4, seed:
     # Construct inventory records
     inventory = []
     for item in selected_items:
-        inventory.append({
-            "item_name": item["item_name"],
-            "category": item["category"],
-            "unit_price": item["unit_price"],
-            "current_stock": np.random.randint(200, 800),  # Realistic stock range
-            "min_stock_level": np.random.randint(50, 150)  # Reasonable threshold for reordering
-        })
+        inventory.append(
+            {
+                "item_name": item["item_name"],
+                "category": item["category"],
+                "unit_price": item["unit_price"],
+                "current_stock": np.random.randint(200, 800),  # Realistic stock range
+                "min_stock_level": np.random.randint(
+                    50, 150
+                ),  # Reasonable threshold for reordering
+            }
+        )
 
     # Return inventory as a pandas DataFrame
     return pd.DataFrame(inventory)
 
-def init_database(db_engine: Engine, seed: int = 137) -> Engine:    
+
+def init_database(db_engine: Engine = db_engine, seed: int = 137) -> Engine:
     """
     Set up the Munder Difflin database with all required tables and initial records.
 
@@ -152,15 +374,19 @@ def init_database(db_engine: Engine, seed: int = 137) -> Engine:
         # ----------------------------
         # 1. Create an empty 'transactions' table schema
         # ----------------------------
-        transactions_schema = pd.DataFrame({
-            "id": [],
-            "item_name": [],
-            "transaction_type": [],  # 'stock_orders' or 'sales'
-            "units": [],             # Quantity involved
-            "price": [],             # Total price for the transaction
-            "transaction_date": [],  # ISO-formatted date
-        })
-        transactions_schema.to_sql("transactions", db_engine, if_exists="replace", index=False)
+        transactions_schema = pd.DataFrame(
+            {
+                "id": [],
+                "item_name": [],
+                "transaction_type": [],  # 'stock_orders' or 'sales'
+                "units": [],  # Quantity involved
+                "price": [],  # Total price for the transaction
+                "transaction_date": [],  # ISO-formatted date
+            }
+        )
+        transactions_schema.to_sql(
+            "transactions", db_engine, if_exists="replace", index=False
+        )
 
         # Set a consistent starting date
         initial_date = datetime(2025, 1, 1).isoformat()
@@ -170,7 +396,9 @@ def init_database(db_engine: Engine, seed: int = 137) -> Engine:
         # ----------------------------
         quote_requests_df = pd.read_csv("quote_requests.csv")
         quote_requests_df["id"] = range(1, len(quote_requests_df) + 1)
-        quote_requests_df.to_sql("quote_requests", db_engine, if_exists="replace", index=False)
+        quote_requests_df.to_sql(
+            "quote_requests", db_engine, if_exists="replace", index=False
+        )
 
         # ----------------------------
         # 3. Load and transform 'quotes' table
@@ -184,20 +412,28 @@ def init_database(db_engine: Engine, seed: int = 137) -> Engine:
             quotes_df["request_metadata"] = quotes_df["request_metadata"].apply(
                 lambda x: ast.literal_eval(x) if isinstance(x, str) else x
             )
-            quotes_df["job_type"] = quotes_df["request_metadata"].apply(lambda x: x.get("job_type", ""))
-            quotes_df["order_size"] = quotes_df["request_metadata"].apply(lambda x: x.get("order_size", ""))
-            quotes_df["event_type"] = quotes_df["request_metadata"].apply(lambda x: x.get("event_type", ""))
+            quotes_df["job_type"] = quotes_df["request_metadata"].apply(
+                lambda x: x.get("job_type", "")
+            )
+            quotes_df["order_size"] = quotes_df["request_metadata"].apply(
+                lambda x: x.get("order_size", "")
+            )
+            quotes_df["event_type"] = quotes_df["request_metadata"].apply(
+                lambda x: x.get("event_type", "")
+            )
 
         # Retain only relevant columns
-        quotes_df = quotes_df[[
-            "request_id",
-            "total_amount",
-            "quote_explanation",
-            "order_date",
-            "job_type",
-            "order_size",
-            "event_type"
-        ]]
+        quotes_df = quotes_df[
+            [
+                "request_id",
+                "total_amount",
+                "quote_explanation",
+                "order_date",
+                "job_type",
+                "order_size",
+                "event_type",
+            ]
+        ]
         quotes_df.to_sql("quotes", db_engine, if_exists="replace", index=False)
 
         # ----------------------------
@@ -209,26 +445,32 @@ def init_database(db_engine: Engine, seed: int = 137) -> Engine:
         initial_transactions = []
 
         # Add a starting cash balance via a dummy sales transaction
-        initial_transactions.append({
-            "item_name": None,
-            "transaction_type": "sales",
-            "units": None,
-            "price": 50000.0,
-            "transaction_date": initial_date,
-        })
+        initial_transactions.append(
+            {
+                "item_name": None,
+                "transaction_type": "sales",
+                "units": None,
+                "price": 50000.0,
+                "transaction_date": initial_date,
+            }
+        )
 
         # Add one stock order transaction per inventory item
         for _, item in inventory_df.iterrows():
-            initial_transactions.append({
-                "item_name": item["item_name"],
-                "transaction_type": "stock_orders",
-                "units": item["current_stock"],
-                "price": item["current_stock"] * item["unit_price"],
-                "transaction_date": initial_date,
-            })
+            initial_transactions.append(
+                {
+                    "item_name": item["item_name"],
+                    "transaction_type": "stock_orders",
+                    "units": item["current_stock"],
+                    "price": item["current_stock"] * item["unit_price"],
+                    "transaction_date": initial_date,
+                }
+            )
 
         # Commit transactions to database
-        pd.DataFrame(initial_transactions).to_sql("transactions", db_engine, if_exists="append", index=False)
+        pd.DataFrame(initial_transactions).to_sql(
+            "transactions", db_engine, if_exists="append", index=False
+        )
 
         # Save the inventory reference table
         inventory_df.to_sql("inventory", db_engine, if_exists="replace", index=False)
@@ -238,6 +480,7 @@ def init_database(db_engine: Engine, seed: int = 137) -> Engine:
     except Exception as e:
         print(f"Error initializing database: {e}")
         raise
+
 
 def create_transaction(
     item_name: str,
@@ -273,13 +516,17 @@ def create_transaction(
             raise ValueError("Transaction type must be 'stock_orders' or 'sales'")
 
         # Prepare transaction record as a single-row DataFrame
-        transaction = pd.DataFrame([{
-            "item_name": item_name,
-            "transaction_type": transaction_type,
-            "units": quantity,
-            "price": price,
-            "transaction_date": date_str,
-        }])
+        transaction = pd.DataFrame(
+            [
+                {
+                    "item_name": item_name,
+                    "transaction_type": transaction_type,
+                    "units": quantity,
+                    "price": price,
+                    "transaction_date": date_str,
+                }
+            ]
+        )
 
         # Insert the record into the database
         transaction.to_sql("transactions", db_engine, if_exists="append", index=False)
@@ -292,11 +539,12 @@ def create_transaction(
         print(f"Error creating transaction: {e}")
         raise
 
+
 def get_all_inventory(as_of_date: str) -> Dict[str, int]:
     """
     Retrieve a snapshot of available inventory as of a specific date.
 
-    This function calculates the net quantity of each item by summing 
+    This function calculates the net quantity of each item by summing
     all stock orders and subtracting all sales up to and including the given date.
 
     Only items with positive stock are included in the result.
@@ -329,11 +577,12 @@ def get_all_inventory(as_of_date: str) -> Dict[str, int]:
     # Convert the result into a dictionary {item_name: stock}
     return dict(zip(result["item_name"], result["stock"]))
 
+
 def get_stock_level(item_name: str, as_of_date: Union[str, datetime]) -> pd.DataFrame:
     """
     Retrieve the stock level of a specific item as of a given date.
 
-    This function calculates the net stock by summing all 'stock_orders' and 
+    This function calculates the net stock by summing all 'stock_orders' and
     subtracting all 'sales' transactions for the specified item up to the given date.
 
     Args:
@@ -368,6 +617,7 @@ def get_stock_level(item_name: str, as_of_date: Union[str, datetime]) -> pd.Data
         params={"item_name": item_name, "as_of_date": as_of_date},
     )
 
+
 def get_supplier_delivery_date(input_date_str: str, quantity: int) -> str:
     """
     Estimate the supplier delivery date based on the requested order quantity and a starting date.
@@ -386,14 +636,18 @@ def get_supplier_delivery_date(input_date_str: str, quantity: int) -> str:
         str: Estimated delivery date in ISO format (YYYY-MM-DD).
     """
     # Debug log (comment out in production if needed)
-    print(f"FUNC (get_supplier_delivery_date): Calculating for qty {quantity} from date string '{input_date_str}'")
+    print(
+        f"FUNC (get_supplier_delivery_date): Calculating for qty {quantity} from date string '{input_date_str}'"
+    )
 
     # Attempt to parse the input date
     try:
         input_date_dt = datetime.fromisoformat(input_date_str.split("T")[0])
     except (ValueError, TypeError):
         # Fallback to current date on format error
-        print(f"WARN (get_supplier_delivery_date): Invalid date format '{input_date_str}', using today as base.")
+        print(
+            f"WARN (get_supplier_delivery_date): Invalid date format '{input_date_str}', using today as base."
+        )
         input_date_dt = datetime.now()
 
     # Determine delivery delay based on quantity
@@ -411,6 +665,7 @@ def get_supplier_delivery_date(input_date_str: str, quantity: int) -> str:
 
     # Return formatted delivery date
     return delivery_date_dt.strftime("%Y-%m-%d")
+
 
 def get_cash_balance(as_of_date: Union[str, datetime]) -> float:
     """
@@ -439,8 +694,12 @@ def get_cash_balance(as_of_date: Union[str, datetime]) -> float:
 
         # Compute the difference between sales and stock purchases
         if not transactions.empty:
-            total_sales = transactions.loc[transactions["transaction_type"] == "sales", "price"].sum()
-            total_purchases = transactions.loc[transactions["transaction_type"] == "stock_orders", "price"].sum()
+            total_sales = transactions.loc[
+                transactions["transaction_type"] == "sales", "price"
+            ].sum()
+            total_purchases = transactions.loc[
+                transactions["transaction_type"] == "stock_orders", "price"
+            ].sum()
             return float(total_sales - total_purchases)
 
         return 0.0
@@ -492,12 +751,14 @@ def generate_financial_report(as_of_date: Union[str, datetime]) -> Dict:
         item_value = stock * item["unit_price"]
         inventory_value += item_value
 
-        inventory_summary.append({
-            "item_name": item["item_name"],
-            "stock": stock,
-            "unit_price": item["unit_price"],
-            "value": item_value,
-        })
+        inventory_summary.append(
+            {
+                "item_name": item["item_name"],
+                "stock": stock,
+                "unit_price": item["unit_price"],
+                "value": item_value,
+            }
+        )
 
     # Identify top-selling products by revenue
     top_sales_query = """
@@ -580,6 +841,7 @@ def search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dict]:
         result = conn.execute(text(query), params)
         return [dict(row._mapping) for row in result]
 
+
 ########################
 ########################
 ########################
@@ -596,22 +858,345 @@ def search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dict]:
  and apply criteria to them to ensure that the flow of the system is correct."""
 
 
+def _normalize_date(input_date_str: str) -> str:
+    """
+    Accepts 'YYYY-MM-DD' or full ISO 'YYYY-MM-DDTHH:MM:SS...'
+    Returns 'YYYY-MM-DD'
+    """
+    if not input_date_str:
+        raise ValueError("input_date_str is required")
+    return input_date_str.split("T")[0]
+
+
+@tool
+def ia_get_stock_level(item_name: str, as_of_date: str) -> Dict:
+    """
+    IA tool (read-only): get stock level for one item as of date.
+    Uses: get_stock_level
+    """
+    as_of_date = _normalize_date(as_of_date)
+    stock_info = get_stock_level(item_name, as_of_date)
+    if stock_info.empty:
+        return {"item_name": item_name, "current_stock": 0, "as_of_date": as_of_date}
+    return {
+        "item_name": str(stock_info["item_name"].iloc[0]),
+        "current_stock": int(stock_info["current_stock"].iloc[0]),
+        "as_of_date": as_of_date,
+    }
+
+
 # Tools for inventory agent
+@tool
+def ia_get_all_inventory(as_of_date: str) -> Dict[str, int]:
+    """
+    IA tool (read-only): get all inventory as of date.
+    Uses: get_all_inventory
+    """
+    as_of_date = _normalize_date(as_of_date)
+    return {k: int(v) for k, v in get_all_inventory(as_of_date=as_of_date).items()}
 
 
 # Tools for quoting agent
 
 
+@tool
+def pa_search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dict]:
+    """
+    PA tool (read-only): search quote history for similar requests.
+    Uses: search_quote_history
+    """
+    return search_quote_history(search_terms=search_terms, limit=int(limit))
+
+
 # Tools for ordering agent
+@tool
+def tla_get_supplier_delivery_date(request_date: str, quantity: int) -> str:
+    """
+    TLA tool (read-only): get supplier delivery date based on requested date and quantity.
+    Uses: get_supplier_delivery_date
+    """
+    return get_supplier_delivery_date(
+        input_date_str=_normalize_date(request_date), quantity=quantity
+    )
+
+
+@tool
+def tla_create_transaction(
+    item_name: str, transaction_type: str, quantity: int, price: float, date: str
+) -> int:
+    """TLA tool (DB write): create a sales or stock_orders transaction. Uses create_transaction."""
+    return int(
+        create_transaction(
+            item_name=item_name,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            price=price,
+            date=date,
+        )
+    )
+
+
+@tool
+def tla_get_cash_balance(as_of_date: str) -> float:
+    """TLA tool (read-only): get current cash balance as of date. Uses get_cash_balance."""
+    return float(get_cash_balance(as_of_date=_normalize_date(as_of_date)))
+
+
+@tool
+def tla_generate_financial_report(as_of_date: str) -> Dict:
+    """TLA tool (read-only): generate financial report as of date. Uses generate_financial_report."""
+    return generate_financial_report(as_of_date=_normalize_date(as_of_date))
 
 
 # Set up your agents and create an orchestration agent that will manage them.
 
 
+# Agent propmts
+
+IA_SYSTEM_PROMPT = """
+You are the Inventory Agent (IA). You are read-only.
+Use only the inventory tools to answer questions about current stock.
+Return factual, structured output. Do not guess. Do not write to the DB.
+"""
+PA_SYSTEM_PROMPT = """
+You are the Pricing Agent (PA). You are read-only.
+Use quote history as optional reference and compute pricing + rationale.
+Always produce a unit price, discount rate, and total. Do not write to the DB.
+"""
+
+TLA_SYSTEM_PROMPT = """
+You are the Transactions & Logistics Agent (TLA).
+You compute delivery dates and fulfillment feasibility.
+You are the ONLY agent allowed to write to the DB, but ONLY when instructed by the orchestrator.
+Return structured results (delivery_date, status, reason). Do not call DB-write tools unless explicitly told.
+"""
+
+# Instantiate agents
+
+inventory_agent = ToolCallingAgent(
+    name="Inventory Agent",
+    description="Read-only agent for inventory checks like stock level and inventory snapshot.",
+    model=model,
+    tools=[ia_get_stock_level, ia_get_all_inventory],
+    system_prompt=IA_SYSTEM_PROMPT,
+)
+
+pricing_agent = ToolCallingAgent(
+    name="Pricing Agent",
+    description="Read-only agent for pricing and quote history reference, may consult quote history.",
+    model=model,
+    tools=[pa_search_quote_history],
+    system_prompt=PA_SYSTEM_PROMPT,
+)
+transactions_logistics_agent = ToolCallingAgent(
+    name="TransactionsLogisticsAgent",
+    description="Agent for delivery feasibility and the only agent permitted to write transactions.",
+    model=model,
+    tools=[
+        tla_get_supplier_delivery_date,
+        tla_create_transaction,  # DB write (must be gated by orchestrator)
+        tla_get_cash_balance,
+        tla_generate_financial_report,
+    ],
+    system_prompt=TLA_SYSTEM_PROMPT,
+)
+
+
+class FrontDeskOrchestratorAgent:
+    """
+    Orchestrator agent that manages the flow of information and decision-making between the Inventory Agent, Pricing Agent, and Transactions & Logistics Agent.
+
+    Responsibilities:
+    - Receive incoming customer requests and determine which agents to consult.
+    - Coordinate the sequence of tool calls across agents based on the request context and intermediate results.
+    - Make final decisions on order fulfillment, pricing, and transaction recording based on aggregated information from all agents.
+    - Applies gating rules for DB writes to ensure that only the Transactions & Logistics Agent writes to the database, and only when explicitly authorized.
+    - Never write to DB
+    - Calls Inventory Agent -> Pricing Agent -> Transactions & Logistics Agent in sequence, passing necessary information and context.
+    """
+
+    def __init__(self, inventory_agent, pricing_agent, transactions_logistics_agent):
+        self.inventory_agent = inventory_agent
+        self.pricing_agent = pricing_agent
+        self.transactions_logistics_agent = transactions_logistics_agent
+
+    def handle_request(self, parsed: ParsedRequest) -> SystemResponse:
+        # TODO: implement to your locked flow:
+        # 1) validate parsed (missing fields / invalid items)
+        # 2) IA: inventory context per line
+        # 3) PA: pricing per line
+        # 4) TLA: delivery + fulfillment per line
+        # 5) aggregate overall_status
+        # 6) gate DB writes: ORDER + overall FULFILLED only
+        # 7) produce customer message + line responses
+
+        """
+        Deterministic orchestration entry point. Follows locked flowchart exactly.
+        """
+        if parsed.missing_fields:
+            return SystemResponse(
+                intent=parsed.intent,
+                overall_status=FulfillmentStatus.INVALID,
+                lines=[],
+                message=f"Request is missing required fields: {', '.join(parsed.missing_fields)}",
+            )
+        if not parsed.items:
+            return SystemResponse(
+                intent=parsed.intent,
+                overall_status=FulfillmentStatus.INVALID,
+                lines=[],
+                message="Request must include at least one item.",
+            )
+        line_responses: List[LineResponse] = []
+        line_statuses: List[FulfillmentStatus] = []
+
+        # Step 1: Process each line item in the request
+        for item in parsed.items:
+            # 1) Validate item (e.g., check if item_name is valid)
+            if item.quantity <= 0 or not item.item_name:
+                line_responses.append(
+                    LineResponse(
+                        item_name=item.item_name or "UNKNOWN",
+                        quantity=item.quantity,
+                        status=FulfillmentStatus.INVALID,
+                        delivery_date=parsed.request_date,  # Echo back request date for reference
+                        total_price=0.0,
+                        reason="Invalid quantity or missing item name.",
+                    )
+                )
+                line_statuses.append(FulfillmentStatus.INVALID)
+                continue
+            # 1B. Inventory Agent (IA)
+            ia_reply = self.inventory_agent.run(
+                f"Get stock for item '{item.item_name}' as of {parsed.request_date}. "
+                f"Return a Python dict with keys: item_name, current_stock, as_of_date."
+            )
+            ia_data = ast.literal_eval(ia_reply)  # Convert string dict to actual dict
+
+            inventory_ctx = InventoryContext(
+                item_name=ia_data["item_name"],
+                as_of_date=ia_data["as_of_date"],
+                available_qty=ia_data["current_stock"],
+                requested_qty=item.quantity,
+                shortage_qty=max(0, item.quantity - ia_data["current_stock"]),
+                in_catalog=True,
+            )
+
+            # 1C. Pricing Agent (PA)
+            # (read-only)
+            pa_reply = self.pricing_agent.run(
+                f"Compute pricing for item '{item.item_name}' "
+                f"with quantity {item.quantity}. "
+                f"Return a Python dict with unit_price, discount_rate, total_price, rationale."
+            )
+
+            pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
+            pricing = PricingResult(
+                item_name=item.item_name,
+                requested_qty=item.quantity,
+                unit_price=float(pa_data["unit_price"]),
+                discount_rate=float(pa_data["discount_rate"]),
+                subtotal=round(unit_price * item.quantity, 2),
+                discount_amount=round(discount_rate * subtotal, 2),
+                total_price=round(subtotal - discount_amount, 2),
+                rationale=pa_data["rationale"],
+            )
+            # 1D. Transactions & Logistics Agent (TLA)
+            # Computes delivery date + fulfillment status
+            tla_reply = self.transactions_logistics_agent.run(
+                f"For item '{item.item_name}', quantity {item.quantity}, "
+                f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
+                f"Return a Python dict with earliest_delivery_date, status, reason."
+            )
+
+            tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
+            logistics = LogisticsResult(
+                item_name=item.item_name,
+                requested_date=parsed.request_date,
+                earliest_delivery_date=tla_data["earliest_delivery_date"],
+                status=FulfillmentStatus(tla_data["status"]),
+                reason=tla_data["reason"],
+            )
+            # 1E. Build LineResponse
+            line_responses.append(
+                LineResponse(
+                    item_name=item.item_name,
+                    quantity=item.quantity,
+                    status=logistics.status,
+                    delivery_date=logistics.earliest_delivery_date,
+                    total_price=pricing.total_price,
+                    reason=logistics.reason,
+                )
+            )
+            line_statuses.append(logistics.status)
+        # Step 2: Aggregate overall status
+        overall_status = aggregate_overall_status(line_statuses)
+
+        # Step 3: Intent + DB write gating
+        if (
+            parsed.intent == Intent.ORDER
+            and overall_status == FulfillmentStatus.FULFILLED
+        ):
+            # Only the TLA can write to the DB, and only when the intent is ORDER and overall status is FULFILLED
+            for line in line_responses:
+                if line.status == FulfillmentStatus.FULFILLED:
+                    tla_create_transaction(
+                        item_name=line.item_name,
+                        transaction_type="sales",
+                        quantity=line.quantity,
+                        price=float(line.total_price),
+                        date=parsed.request_date,
+                    )
+        # Step 4: Build customer message
+
+        message = self._build_customer_message(
+            parsed.intent, overall_status, line_responses
+        )
+
+        return SystemResponse(
+            overall_status=overall_status,
+            lines=line_responses,
+            message=message,
+            intent=parsed.intent,
+        )
+
+    def _build_customer_message(
+        self,
+        intent: Intent,
+        overall_status: FulfillmentStatus,
+        lines: List[LineResponse],
+    ) -> str:
+        """
+        Customer-facing summary only.
+        No internal reasoning.
+        """
+        if overall_status == FulfillmentStatus.INVALID:
+            return (
+                "Your request could not be processed due to invalid item information."
+            )
+
+        if intent == Intent.QUOTE:
+            return "Here is your quote with pricing and estimated delivery dates."
+
+        if intent == Intent.ORDER and overall_status == FulfillmentStatus.FULFILLED:
+            return "Your order has been successfully placed."
+
+        if intent == Intent.ORDER and overall_status == FulfillmentStatus.NOT_FULFILLED:
+            return (
+                "We cannot meet your requested delivery date. Here is a counter-offer."
+            )
+
+        return "Request processed."
+
+
+fdo = FrontDeskOrchestratorAgent(
+    inventory_agent, pricing_agent, transactions_logistics_agent
+)
 # Run your test scenarios by writing them here. Make sure to keep track of them.
 
+
 def run_test_scenarios():
-    
+
     print("Initializing Database...")
     init_database()
     try:
@@ -630,7 +1215,7 @@ def run_test_scenarios():
     report = generate_financial_report(initial_date)
     current_cash = report["cash_balance"]
     current_inventory = report["inventory_value"]
-
+    # overall_status = aggregate_overall_status([line.status for line in line_responses])
     ############
     ############
     ############
