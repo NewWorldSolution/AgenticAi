@@ -966,9 +966,30 @@ Always produce a unit price, discount rate, and total. Do not write to the DB.
 
 TLA_SYSTEM_PROMPT = """
 You are the Transactions & Logistics Agent (TLA).
-You compute delivery dates and fulfillment feasibility.
-You are the ONLY agent allowed to write to the DB, but ONLY when instructed by the orchestrator.
-Return structured results (delivery_date, status, reason). Do not call DB-write tools unless explicitly told.
+
+ROLE:
+You compute the earliest supplier delivery date for a requested item.
+You do NOT decide fulfillment status.
+You do NOT write to the database unless explicitly instructed.
+You do NOT apply business rules about requested_by dates.
+
+RULES:
+- Return only a Python dictionary.
+- The dictionary must contain:
+    - earliest_delivery_date (string YYYY-MM-DD)
+    - reason (string, may be empty)
+
+You must NOT include fulfillment status.
+You must NOT include pricing.
+You must NOT include any explanation text outside the dictionary.
+
+Example output:
+{
+    "earliest_delivery_date": "2025-01-04",
+    "reason": ""
+}
+
+Return ONLY the dictionary.
 """
 
 # Instantiate agents
@@ -1091,14 +1112,21 @@ class FrontDeskOrchestratorAgent:
             )
 
             pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
+            unit_price = float(pa_data["unit_price"])
+            discount_rate = float(pa_data["discount_rate"])
+
+            subtotal = round(unit_price * item.quantity, 2)
+            discount_amount = round(subtotal * discount_rate, 2)
+            total_price = round(subtotal - discount_amount, 2)
+
             pricing = PricingResult(
                 item_name=item.item_name,
                 requested_qty=item.quantity,
-                unit_price=float(pa_data["unit_price"]),
-                discount_rate=float(pa_data["discount_rate"]),
-                subtotal=round(unit_price * item.quantity, 2),
-                discount_amount=round(discount_rate * subtotal, 2),
-                total_price=round(subtotal - discount_amount, 2),
+                unit_price=unit_price,
+                discount_rate=discount_rate,
+                subtotal=subtotal,
+                discount_amount=discount_amount,
+                total_price=total_price,
                 rationale=pa_data["rationale"],
             )
             # 1D. Transactions & Logistics Agent (TLA)
@@ -1110,12 +1138,25 @@ class FrontDeskOrchestratorAgent:
             )
 
             tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
+            delivery_date = tla_data["earliest_delivery_date"]
+            tla_reason = tla_data.get("reason")
+            if parsed.requested_by:
+                if delivery_date > parsed.requested_by:
+                    status = FulfillmentStatus.NOT_FULFILLED
+                    reason = f"Requested delivery date cannot be met. Earliest possible: {delivery_date}."
+                else:
+                    status = FulfillmentStatus.FULFILLED
+                    reason = tla_reason
+            else:
+                status = FulfillmentStatus.FULFILLED
+                reason = tla_reason
+
             logistics = LogisticsResult(
                 item_name=item.item_name,
-                requested_date=parsed.request_date,
-                earliest_delivery_date=tla_data["earliest_delivery_date"],
-                status=FulfillmentStatus(tla_data["status"]),
-                reason=tla_data["reason"],
+                request_date=parsed.request_date,
+                earliest_delivery_date=delivery_date,
+                status=status,
+                reason=reason,
             )
             # 1E. Build LineResponse
             line_responses.append(
@@ -1140,13 +1181,13 @@ class FrontDeskOrchestratorAgent:
             # Only the TLA can write to the DB, and only when the intent is ORDER and overall status is FULFILLED
             for line in line_responses:
                 if line.status == FulfillmentStatus.FULFILLED:
-                    tla_create_transaction(
-                        item_name=line.item_name,
-                        transaction_type="sales",
-                        quantity=line.quantity,
-                        price=float(line.total_price),
-                        date=parsed.request_date,
-                    )
+                    self.transactions_logistics_agent.run(
+                        f"Create a sales transaction for item '{line.item_name}', "
+                        f"quantity {line.quantity}, price {line.total_price}, "
+                        f"date {parsed.request_date}. "
+                        f"Use transaction_type='sales'. "
+                        f"Return the transaction ID."
+                 )
         # Step 4: Build customer message
 
         message = self._build_customer_message(
