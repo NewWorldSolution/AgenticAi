@@ -45,7 +45,6 @@ class Intent(str, Enum):
     QUOTE = "QUOTE"
     ORDER = "ORDER"
 
-
 class TransactionType(str, Enum):
     STOCK_ORDERS = "stock_orders"
     SALES = "sales"
@@ -962,9 +961,6 @@ TASK:
 Given a line item, quantity, and a base unit price (from catalog),
 use quote history (via pa_search_quote_history) as retrieval context to recommend a discount.
 
-MANDATORY TOOL USE:
-You MUST call pa_search_quote_history at least once per request.
-
 RETURN FORMAT:
 Return ONLY a Python dictionary with exactly these keys:
 {
@@ -1134,9 +1130,10 @@ class FrontDeskOrchestratorAgent:
                 f"Get stock for item '{item.item_name}' as of {parsed.request_date}. "
                 f"Return a Python dict with keys: item_name, current_stock, as_of_date."
             )
-            ia_data = ast.literal_eval(ia_reply)  # Convert string dict to actual dict
+            try:
+                ia_data = ast.literal_eval(ia_reply)  # Convert string dict to actual dict
 
-            inventory_ctx = InventoryContext(
+                inventory_ctx = InventoryContext(
                 item_name=ia_data["item_name"],
                 as_of_date=ia_data["as_of_date"],
                 available_qty=ia_data["current_stock"],
@@ -1144,6 +1141,20 @@ class FrontDeskOrchestratorAgent:
                 shortage_qty=max(0, item.quantity - ia_data["current_stock"]),
                 in_catalog=True,
             )
+            except Exception:
+                line_responses.append(
+                    LineResponse(
+                        item_name=item.item_name,
+                        quantity=item.quantity,
+                        status=FulfillmentStatus.INVALID,
+                        delivery_date=parsed.request_date,
+                        total_price=0.0,
+                        reason="Inventory Agent returned invalid response format.",
+                    )
+                )
+                line_statuses.append(FulfillmentStatus.INVALID)
+                continue
+            
 
             # 1C. Pricing Agent (PA)
             # (read-only)
@@ -1153,36 +1164,58 @@ class FrontDeskOrchestratorAgent:
                 (parsed.event or "").lower(),
                 (parsed.need_size or "").lower(),
             ]
-   
-            
+            history = pa_search_quote_history(
+            search_terms=search_terms,
+            limit=5
+            )
+
             pa_reply = self.pricing_agent.run(
-                "You must call pa_search_quote_history using these search_terms and then recommend a discount.\n"
+                "Use the provided historical quote data to recommend a discount rate.\n\n"
                 f"item_name={item.item_name}\n"
                 f"quantity={item.quantity}\n"
                 f"base_unit_price={base_unit_price}\n"
-                f"search_terms={search_terms}\n"
-                "Return ONLY: {'discount_rate': float, 'rationale': str}"
+                f"quote_history={history}\n\n"
+                "Rules:\n"
+                "- Analyze similarities in quantity, job_type, order_size, and event_type.\n"
+                "- If history is weak or empty, fall back to conservative quantity-based discount.\n"
+                "- Return ONLY a Python dictionary:\n"
+                "{'discount_rate': float, 'rationale': str}"
             )
 
-            pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
-            discount_rate = float(pa_data["discount_rate"])
-            discount_rate = max(0.0, min(discount_rate, 0.30))  # safety clamp
+            try:
+                pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
+                discount_rate = float(pa_data["discount_rate"])
+                discount_rate = max(0.0, min(discount_rate, 0.30))  # safety clamp
 
 
-            subtotal = round(base_unit_price * item.quantity, 2)
-            discount_amount = round(subtotal * discount_rate, 2)
-            total_price = round(subtotal - discount_amount, 2)
+                subtotal = round(base_unit_price * item.quantity, 2)
+                discount_amount = round(subtotal * discount_rate, 2)
+                total_price = round(subtotal - discount_amount, 2)
 
-            pricing = PricingResult(
-                item_name=item.item_name,
-                requested_qty=item.quantity,
-                unit_price=base_unit_price,
-                discount_rate=discount_rate,
-                subtotal=subtotal,
-                discount_amount=discount_amount,
-                total_price=total_price,
-                rationale=pa_data["rationale"],
-            )
+                pricing = PricingResult(
+                    item_name=item.item_name,
+                    requested_qty=item.quantity,
+                    unit_price=base_unit_price,
+                    discount_rate=discount_rate,
+                    subtotal=subtotal,
+                    discount_amount=discount_amount,
+                    total_price=total_price,
+                    rationale=pa_data["rationale"],
+                )
+            except Exception:
+                line_responses.append(
+                    LineResponse(
+                        item_name=item.item_name,
+                        quantity=item.quantity,
+                        status=FulfillmentStatus.INVALID,
+                        delivery_date=parsed.request_date,
+                        total_price=0.0,
+                        reason="Pricing Agent returned invalid response format.",
+                    )
+                )
+                line_statuses.append(FulfillmentStatus.INVALID)
+                continue
+            
             # 1D. Transactions & Logistics Agent (TLA)
             # Computes delivery date + fulfillment status
             tla_reply = self.transactions_logistics_agent.run(
@@ -1190,10 +1223,24 @@ class FrontDeskOrchestratorAgent:
                 f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
                 f"Return a Python dict with earliest_delivery_date and reason."
             )
-
-            tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
-            delivery_date = tla_data["earliest_delivery_date"]
-            tla_reason = tla_data.get("reason")
+            try:
+                tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
+                delivery_date = tla_data["earliest_delivery_date"]
+                tla_reason = tla_data.get("reason")
+            except Exception:
+                line_responses.append(
+                    LineResponse(
+                        item_name=item.item_name,
+                        quantity=item.quantity,
+                        status=FulfillmentStatus.INVALID,
+                        delivery_date=parsed.request_date,
+                        total_price=0.0,
+                        reason="Transactions & Logistics Agent returned invalid response format.",
+                    )
+                )
+                line_statuses.append(FulfillmentStatus.INVALID)
+                continue
+            
             if parsed.requested_by:
                 if delivery_date > parsed.requested_by:
                     status = FulfillmentStatus.NOT_FULFILLED
@@ -1225,7 +1272,10 @@ class FrontDeskOrchestratorAgent:
             )
             line_statuses.append(logistics.status)
         # Step 2: Aggregate overall status
-        overall_status = aggregate_overall_status(line_statuses)
+        if not line_statuses:
+            overall_status = FulfillmentStatus.INVALID
+        else:
+            overall_status = aggregate_overall_status(line_statuses)
 
         # Step 3: Intent + DB write gating
         if (
@@ -1236,12 +1286,41 @@ class FrontDeskOrchestratorAgent:
             for line in line_responses:
                 if line.status == FulfillmentStatus.FULFILLED:
                     self.transactions_logistics_agent.run(
-                        f"Create a sales transaction for item '{line.item_name}', "
-                        f"quantity {line.quantity}, price {line.total_price}, "
-                        f"date {parsed.request_date}. "
-                        f"Use transaction_type='sales'. "
-                        f"Return the transaction ID."
+                        "Call tla_create_transaction with:\n"
+                        f"item_name={line.item_name}\n"
+                        f"transaction_type=sales\n"
+                        f"quantity={line.quantity}\n"
+                        f"price={line.total_price}\n"
+                        f"date={parsed.request_date}\n"
+                        "Return ONLY the integer transaction id."
                  )
+            # After sales transaction, check if reorder needed
+            # Get current stock AFTER the sale date
+            stock_info = get_stock_level(line.item_name, parsed.request_date)
+            current_stock = int(stock_info["current_stock"].iloc[0])
+
+            # Get min_stock_level from inventory table
+            inventory_df = pd.read_sql(
+                "SELECT min_stock_level FROM inventory WHERE item_name = :item_name",
+                db_engine,
+                params={"item_name": line.item_name},
+            )
+
+            if not inventory_df.empty:
+                min_stock_level = int(inventory_df.iloc[0]["min_stock_level"])
+
+                if current_stock < min_stock_level:
+                    reorder_qty = max(min_stock_level * 2 - current_stock, line.quantity)
+
+                    self.transactions_logistics_agent.run(
+                        "Call tla_create_transaction with:\n"
+                        f"item_name={line.item_name}\n"
+                        f"transaction_type=stock_orders\n"
+                        f"quantity={reorder_qty}\n"
+                        f"price={round(reorder_qty * base_unit_price, 2)}\n"
+                        f"date={parsed.request_date}\n"
+                        "Return ONLY the integer transaction id."
+                    )
         # Step 4: Build customer message
 
         message = self._build_customer_message(
