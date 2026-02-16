@@ -1284,43 +1284,46 @@ class FrontDeskOrchestratorAgent:
         ):
             # Only the TLA can write to the DB, and only when the intent is ORDER and overall status is FULFILLED
             for line in line_responses:
-                if line.status == FulfillmentStatus.FULFILLED:
-                    self.transactions_logistics_agent.run(
-                        "Call tla_create_transaction with:\n"
-                        f"item_name={line.item_name}\n"
-                        f"transaction_type=sales\n"
-                        f"quantity={line.quantity}\n"
-                        f"price={line.total_price}\n"
-                        f"date={parsed.request_date}\n"
-                        "Return ONLY the integer transaction id."
-                 )
-            # After sales transaction, check if reorder needed
-            # Get current stock AFTER the sale date
-            stock_info = get_stock_level(line.item_name, parsed.request_date)
-            current_stock = int(stock_info["current_stock"].iloc[0])
+                if line.status != FulfillmentStatus.FULFILLED:
+                    continue  # Skip lines that are not fulfilled 
+                tla_create_transaction(
+                    item_name=line.item_name,
+                    transaction_type="sales",
+                    quantity=line.quantity,
+                    price=line.total_price,
+                    date=parsed.request_date,
+                )
+                # After sales transaction, check if reorder needed
+                # Get current stock AFTER the sale date
+                stock_info = get_stock_level(line.item_name, parsed.request_date)
+                current_stock = int(stock_info["current_stock"].iloc[0])
 
-            # Get min_stock_level from inventory table
-            inventory_df = pd.read_sql(
-                "SELECT min_stock_level FROM inventory WHERE item_name = :item_name",
-                db_engine,
-                params={"item_name": line.item_name},
-            )
+                # Get min_stock_level from inventory table
+                inventory_df = pd.read_sql(
+                    "SELECT min_stock_level FROM inventory WHERE item_name = :item_name",
+                    db_engine,
+                    params={"item_name": line.item_name},
+                )
 
-            if not inventory_df.empty:
+                if inventory_df.empty:
+                        continue
+
                 min_stock_level = int(inventory_df.iloc[0]["min_stock_level"])
+                base_unit_price = float(inventory_df.iloc[0]["unit_price"])
 
                 if current_stock < min_stock_level:
-                    reorder_qty = max(min_stock_level * 2 - current_stock, line.quantity)
+                    reorder_qty = int(max(min_stock_level * 2 - current_stock, line.quantity))
 
-                    self.transactions_logistics_agent.run(
-                        "Call tla_create_transaction with:\n"
-                        f"item_name={line.item_name}\n"
-                        f"transaction_type=stock_orders\n"
-                        f"quantity={reorder_qty}\n"
-                        f"price={round(reorder_qty * base_unit_price, 2)}\n"
-                        f"date={parsed.request_date}\n"
-                        "Return ONLY the integer transaction id."
+                    # Future-dated reorder using supplier lead time
+                    reorder_date = tla_get_supplier_delivery_date(parsed.request_date, reorder_qty)
+                    tla_create_transaction(
+                        item_name=line.item_name,
+                        transaction_type="stock_orders",
+                        quantity=reorder_qty,
+                        price=round(reorder_qty * base_unit_price, 2),
+                        date=reorder_date,
                     )
+
         # Step 4: Build customer message
 
         message = self._build_customer_message(
