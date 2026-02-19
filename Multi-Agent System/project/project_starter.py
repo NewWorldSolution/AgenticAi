@@ -30,7 +30,7 @@ from enum import Enum
 
 # Create an SQLite database
 db_engine = create_engine("sqlite:///munder_difflin.db")
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 dotenv.load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
 base_url = os.getenv("OPENAI_BASE_URL")
@@ -389,7 +389,7 @@ def init_database(db_engine: Engine = db_engine, seed: int = 137) -> Engine:
         # ----------------------------
         # 2. Load and initialize 'quote_requests' table
         # ----------------------------
-        quote_requests_df = pd.read_csv("quote_requests.csv")
+        quote_requests_df = pd.read_csv(os.path.join(BASE_DIR, "quote_requests.csv"))
         quote_requests_df["id"] = range(1, len(quote_requests_df) + 1)
         quote_requests_df.to_sql(
             "quote_requests", db_engine, if_exists="replace", index=False
@@ -398,7 +398,7 @@ def init_database(db_engine: Engine = db_engine, seed: int = 137) -> Engine:
         # ----------------------------
         # 3. Load and transform 'quotes' table
         # ----------------------------
-        quotes_df = pd.read_csv("quotes.csv")
+        quotes_df = pd.read_csv(os.path.join(BASE_DIR, "quotes.csv"))
         quotes_df["request_id"] = range(1, len(quotes_df) + 1)
         quotes_df["order_date"] = initial_date
 
@@ -926,7 +926,7 @@ def tla_create_transaction(
             transaction_type=transaction_type,
             quantity=quantity,
             price=price,
-            date=date,
+            date=_normalize_date(date),
         )
     )
 
@@ -959,7 +959,7 @@ You are strictly READ-ONLY and must never write to the database.
 
 TASK:
 Given a line item, quantity, and a base unit price (from catalog),
-use quote history (via pa_search_quote_history) as retrieval context to recommend a discount.
+use the provided quote_history as retrieval context to recommend a discount (via pa_search_quote_history).
 
 RETURN FORMAT:
 Return ONLY a Python dictionary with exactly these keys:
@@ -1058,6 +1058,90 @@ class FrontDeskOrchestratorAgent:
     - Calls Inventory Agent -> Pricing Agent -> Transactions & Logistics Agent in sequence, passing necessary information and context.
     """
 
+    def parse_request_from_row(self, row: pd.Series) -> ParsedRequest:
+        """
+        Uses the LLM once to convert free-text request into structured ParsedRequest.
+        This is the ONLY place where FDO uses the LLM directly.
+        """
+
+        request_date = row["request_date"].strftime("%Y-%m-%d")
+        raw_text = row["request"]
+
+        parsing_prompt = f"""
+                You are the Front Desk Agent for Beaver’s Choice Paper Company.
+
+                Extract structured information from the customer request below.
+
+                Return ONLY a Python dictionary with this exact structure:
+
+                {{
+                "intent": "QUOTE" or "ORDER",
+                "items": [
+                    {{"item_name": str, "quantity": int}}
+                ],
+                "requested_by": "YYYY-MM-DD" or None
+                }}
+
+                Rules:
+                - Infer intent: if the customer clearly wants to place an order → ORDER, otherwise QUOTE.
+                - Extract all items and quantities mentioned.
+                - Normalize item_name exactly as written in the catalog if possible.
+                - If delivery deadline mentioned (e.g., "by April 15, 2025"), convert to YYYY-MM-DD.
+                - If no deadline mentioned, use None.
+                - Return ONLY the dictionary. No extra text.
+
+                Customer Context:
+                Job: {row.get("job", "")}
+                Event: {row.get("event", "")}
+                Need Size: {row.get("need_size", "")}
+                Request Date: {request_date}
+
+                Customer Request:
+                {raw_text}
+                """
+
+        try:
+            reply = model.run(parsing_prompt)
+            parsed_dict = ast.literal_eval(reply)
+
+            intent = Intent(parsed_dict["intent"])
+
+            items = [
+                LineItem(
+                    raw_fragment=raw_text,
+                    item_name=item["item_name"],
+                    quantity=int(item["quantity"]),
+                )
+                for item in parsed_dict["items"]
+            ]
+
+            requested_by = parsed_dict.get("requested_by")
+
+            return ParsedRequest(
+                raw_text=raw_text,
+                request_date=request_date,
+                intent=intent,
+                items=items,
+                job=row.get("job"),
+                event=row.get("event"),
+                need_size=row.get("need_size"),
+                requested_by=requested_by,
+                missing_fields=[],
+            )
+
+        except Exception:
+            return ParsedRequest(
+                raw_text=raw_text,
+                request_date=request_date,
+                intent=Intent.QUOTE,
+                items=[],
+                job=row.get("job"),
+                event=row.get("event"),
+                need_size=row.get("need_size"),
+                requested_by=None,
+                missing_fields=["Parsing failed"],
+            )
+
     def __init__(self, inventory_agent, pricing_agent, transactions_logistics_agent):
         self.inventory_agent = inventory_agent
         self.pricing_agent = pricing_agent
@@ -1133,13 +1217,13 @@ class FrontDeskOrchestratorAgent:
                 ia_data = ia_get_stock_level(item.item_name, parsed.request_date)  # Convert string dict to actual dict
 
                 inventory_ctx = InventoryContext(
-                item_name=ia_data["item_name"],
-                as_of_date=ia_data["as_of_date"],
-                available_qty=ia_data["current_stock"],
-                requested_qty=item.quantity,
-                shortage_qty=max(0, item.quantity - ia_data["current_stock"]),
-                in_catalog=True,
-            )
+                    item_name=ia_data["item_name"],
+                    as_of_date=ia_data["as_of_date"],
+                    available_qty=ia_data["current_stock"],
+                    requested_qty=item.quantity,
+                    shortage_qty=max(0, item.quantity - ia_data["current_stock"]),
+                    in_catalog=True,
+                )
             except Exception:
                 line_responses.append(
                     LineResponse(
@@ -1148,7 +1232,7 @@ class FrontDeskOrchestratorAgent:
                         status=FulfillmentStatus.INVALID,
                         delivery_date=parsed.request_date,
                         total_price=0.0,
-                        reason="Inventory Agent returned invalid response format.",
+                        reason="Inventory lookup failed.",
                     )
                 )
                 line_statuses.append(FulfillmentStatus.INVALID)
@@ -1245,7 +1329,9 @@ class FrontDeskOrchestratorAgent:
                 continue
             
             if parsed.requested_by:
-                if delivery_date > parsed.requested_by:
+                delivery_dt = datetime.fromisoformat(delivery_date)
+                requested_by_dt = datetime.fromisoformat(parsed.requested_by)
+                if delivery_dt > requested_by_dt:
                     status = FulfillmentStatus.NOT_FULFILLED
                     reason = f"Requested delivery date cannot be met. Earliest possible: {delivery_date}."
                 else:
@@ -1289,12 +1375,14 @@ class FrontDeskOrchestratorAgent:
             for line in line_responses:
                 if line.status != FulfillmentStatus.FULFILLED:
                     continue  # Skip lines that are not fulfilled 
-                tla_create_transaction(
-                    item_name=line.item_name,
-                    transaction_type="sales",
-                    quantity=line.quantity,
-                    price=line.total_price,
-                    date=parsed.request_date,
+                self.transactions_logistics_agent.run(
+                    "Call tla_create_transaction with:\n"
+                    f"item_name={line.item_name}\n"
+                    f"transaction_type=sales\n"
+                    f"quantity={line.quantity}\n"
+                    f"price={line.total_price}\n"
+                    f"date={parsed.request_date}\n"
+                    "Return ONLY the integer transaction id."
                 )
                 # After sales transaction, check if reorder needed
                 # Get current stock AFTER the sale date
@@ -1319,12 +1407,14 @@ class FrontDeskOrchestratorAgent:
 
                     # Future-dated reorder using supplier lead time
                     reorder_date = tla_get_supplier_delivery_date(parsed.request_date, reorder_qty)
-                    tla_create_transaction(
-                        item_name=line.item_name,
-                        transaction_type="stock_orders",
-                        quantity=reorder_qty,
-                        price=round(reorder_qty * unit_price_for_cost, 2),
-                        date=reorder_date,
+                    self.transactions_logistics_agent.run(
+                        "Call tla_create_transaction with:\n"
+                        f"item_name={line.item_name}\n"
+                        f"transaction_type=stock_orders\n"
+                        f"quantity={reorder_qty}\n"
+                        f"price={round(reorder_qty * unit_price_for_cost, 2)}\n"
+                        f"date={reorder_date}\n"
+                        "Return ONLY the integer transaction id."
                     )
 
         # Step 4: Build customer message
@@ -1332,7 +1422,11 @@ class FrontDeskOrchestratorAgent:
         message = self._build_customer_message(
             parsed.intent, overall_status, line_responses
         )
-        _ = tla_generate_financial_report(parsed.request_date)
+        _ = self.transactions_logistics_agent.run(
+            "Call tla_generate_financial_report with:\n"
+            f"as_of_date={parsed.request_date}\n"
+            "Return ONLY the financial report dictionary."
+        )
         return SystemResponse(
             overall_status=overall_status,
             lines=line_responses,
@@ -1380,7 +1474,8 @@ def run_test_scenarios():
     print("Initializing Database...")
     init_database()
     try:
-        quote_requests_sample = pd.read_csv("quote_requests_sample.csv")
+        
+        quote_requests_sample = pd.read_csv(os.path.join(BASE_DIR, "quote_requests_sample.csv"))
         quote_requests_sample["request_date"] = pd.to_datetime(
             quote_requests_sample["request_date"], format="%m/%d/%y", errors="coerce"
         )
@@ -1415,7 +1510,32 @@ def run_test_scenarios():
         print(f"Inventory Value: ${current_inventory:.2f}")
 
         # Process request
-        request_with_date = f"{row['request']} (Date of request: {request_date})"
+        # parsed = ParsedRequest(
+        #     raw_text=row["request"],
+        #     request_date=request_date,
+        #     intent=Intent.QUOTE if row.get("intent", "QUOTE").upper() == "QUOTE" else Intent.ORDER,
+        #     items=[  # we will improve this parsing later
+        #         LineItem(
+        #             raw_fragment=row["request"],
+        #             item_name=row["item_name"],
+        #             quantity=int(row["quantity"]),
+        #         )
+        #     ],
+        #     job=row.get("job"),
+        #     event=row.get("event"),
+        #     need_size=row.get("need_size"),
+        #     requested_by=row.get("requested_by"),
+        #     missing_fields=[],
+        # )
+        parsed = fdo.parse_request_from_row(row)
+        system_response = fdo.handle_request(parsed)
+        response = system_response.message
+        
+        
+        
+        
+        
+   
 
         ############
         ############
@@ -1440,6 +1560,10 @@ def run_test_scenarios():
             {
                 "request_id": idx + 1,
                 "request_date": request_date,
+                "intent": system_response.intent.value,
+                "overall_status": system_response.overall_status.value,
+                "line_statuses": [line.status.value for line in system_response.lines],
+                "line_reasons": [line.reason for line in system_response.lines],
                 "cash_balance": current_cash,
                 "inventory_value": current_inventory,
                 "response": response,
