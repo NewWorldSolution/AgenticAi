@@ -631,9 +631,9 @@ def get_supplier_delivery_date(input_date_str: str, quantity: int) -> str:
         str: Estimated delivery date in ISO format (YYYY-MM-DD).
     """
     # Debug log (comment out in production if needed)
-    print(
-        f"FUNC (get_supplier_delivery_date): Calculating for qty {quantity} from date string '{input_date_str}'"
-    )
+    # print(
+    #     f"FUNC (get_supplier_delivery_date): Calculating for qty {quantity} from date string '{input_date_str}'"
+    # )
 
     # Attempt to parse the input date
     try:
@@ -1102,8 +1102,17 @@ class FrontDeskOrchestratorAgent:
 
         try:
             reply = model.run(parsing_prompt)
+            # Strip markdown fences if the model returns ```python ... ```
+            reply = reply.strip()
+            if reply.startswith("```"):
+                reply = reply.split("\n", 1)[1]
+                if reply.endswith("```"):
+                    reply = reply.rsplit("```", 1)[0]
+                reply = reply.strip()
             parsed_dict = ast.literal_eval(reply)
 
+            if not isinstance(parsed_dict, dict):
+                raise ValueError("Parsed output is not a dictionary.")
             intent = Intent(parsed_dict["intent"])
 
             items = [
@@ -1116,6 +1125,8 @@ class FrontDeskOrchestratorAgent:
             ]
 
             requested_by = parsed_dict.get("requested_by")
+            if requested_by in (None, "", "None", "null", "NULL"):
+                requested_by = None
 
             return ParsedRequest(
                 raw_text=raw_text,
@@ -1322,7 +1333,7 @@ class FrontDeskOrchestratorAgent:
                         status=FulfillmentStatus.INVALID,
                         delivery_date=parsed.request_date,
                         total_price=0.0,
-                        reason="Transactions & Logistics Agent returned invalid response format.",
+                        reason="Supplier delivery date lookup failed.",
                     )
                 )
                 line_statuses.append(FulfillmentStatus.INVALID)
@@ -1375,14 +1386,12 @@ class FrontDeskOrchestratorAgent:
             for line in line_responses:
                 if line.status != FulfillmentStatus.FULFILLED:
                     continue  # Skip lines that are not fulfilled 
-                self.transactions_logistics_agent.run(
-                    "Call tla_create_transaction with:\n"
-                    f"item_name={line.item_name}\n"
-                    f"transaction_type=sales\n"
-                    f"quantity={line.quantity}\n"
-                    f"price={line.total_price}\n"
-                    f"date={parsed.request_date}\n"
-                    "Return ONLY the integer transaction id."
+                tla_create_transaction(
+                    item_name=line.item_name,
+                    transaction_type="sales",
+                    quantity=line.quantity,
+                    price=line.total_price,
+                    date=parsed.request_date,
                 )
                 # After sales transaction, check if reorder needed
                 # Get current stock AFTER the sale date
@@ -1407,26 +1416,20 @@ class FrontDeskOrchestratorAgent:
 
                     # Future-dated reorder using supplier lead time
                     reorder_date = tla_get_supplier_delivery_date(parsed.request_date, reorder_qty)
-                    self.transactions_logistics_agent.run(
-                        "Call tla_create_transaction with:\n"
-                        f"item_name={line.item_name}\n"
-                        f"transaction_type=stock_orders\n"
-                        f"quantity={reorder_qty}\n"
-                        f"price={round(reorder_qty * unit_price_for_cost, 2)}\n"
-                        f"date={reorder_date}\n"
-                        "Return ONLY the integer transaction id."
+                    tla_create_transaction(
+                        item_name=line.item_name,
+                        transaction_type="stock_orders",
+                        quantity=reorder_qty,
+                        price=round(reorder_qty * unit_price_for_cost, 2),
+                        date=reorder_date,
                     )
-
+                      
         # Step 4: Build customer message
 
         message = self._build_customer_message(
             parsed.intent, overall_status, line_responses
         )
-        _ = self.transactions_logistics_agent.run(
-            "Call tla_generate_financial_report with:\n"
-            f"as_of_date={parsed.request_date}\n"
-            "Return ONLY the financial report dictionary."
-        )
+        _ = tla_generate_financial_report(parsed.request_date)  # Update financial report context for next request
         return SystemResponse(
             overall_status=overall_status,
             lines=line_responses,
@@ -1530,13 +1533,7 @@ def run_test_scenarios():
         parsed = fdo.parse_request_from_row(row)
         system_response = fdo.handle_request(parsed)
         response = system_response.message
-        
-        
-        
-        
-        
    
-
         ############
         ############
         ############
@@ -1570,7 +1567,7 @@ def run_test_scenarios():
             }
         )
 
-        time.sleep(1)
+        # time.sleep(1)
 
     # Final report
     final_date = quote_requests_sample["request_date"].max().strftime("%Y-%m-%d")
