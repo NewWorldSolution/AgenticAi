@@ -1076,6 +1076,8 @@ class FrontDeskOrchestratorAgent:
         """
         Deterministic orchestration entry point. Follows locked flowchart exactly.
         """
+        _ = ia_get_all_inventory(parsed.request_date)
+        _ = tla_get_cash_balance(parsed.request_date)
         if parsed.missing_fields:
             return SystemResponse(
                 intent=parsed.intent,
@@ -1126,12 +1128,9 @@ class FrontDeskOrchestratorAgent:
 
             base_unit_price = float(catalog_item["unit_price"])
             # 1B. Inventory Agent (IA)
-            ia_reply = self.inventory_agent.run(
-                f"Get stock for item '{item.item_name}' as of {parsed.request_date}. "
-                f"Return a Python dict with keys: item_name, current_stock, as_of_date."
-            )
+            
             try:
-                ia_data = ast.literal_eval(ia_reply)  # Convert string dict to actual dict
+                ia_data = ia_get_stock_level(item.item_name, parsed.request_date)  # Convert string dict to actual dict
 
                 inventory_ctx = InventoryContext(
                 item_name=ia_data["item_name"],
@@ -1218,15 +1217,19 @@ class FrontDeskOrchestratorAgent:
             
             # 1D. Transactions & Logistics Agent (TLA)
             # Computes delivery date + fulfillment status
-            tla_reply = self.transactions_logistics_agent.run(
-                f"For item '{item.item_name}', quantity {item.quantity}, "
-                f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
-                f"Return a Python dict with earliest_delivery_date and reason."
-            )
+            # tla_reply = self.transactions_logistics_agent.run(
+            #     f"For item '{item.item_name}', quantity {item.quantity}, "
+            #     f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
+            #     f"Return a Python dict with earliest_delivery_date and reason."
+            # )
             try:
-                tla_data = ast.literal_eval(tla_reply)  # Convert string dict to actual dict
-                delivery_date = tla_data["earliest_delivery_date"]
-                tla_reason = tla_data.get("reason")
+                if inventory_ctx.shortage_qty > 0:
+                    # If there's a shortage, we need to check supplier delivery date
+                    delivery_date= tla_get_supplier_delivery_date(parsed.request_date, inventory_ctx.shortage_qty)
+                    tla_reason = "Supplier lead time required due to shortage."
+                else:
+                    delivery_date = parsed.request_date  # Can fulfill immediately from stock
+                    tla_reason = ""
             except Exception:
                 line_responses.append(
                     LineResponse(
@@ -1300,7 +1303,7 @@ class FrontDeskOrchestratorAgent:
 
                 # Get min_stock_level from inventory table
                 inventory_df = pd.read_sql(
-                    "SELECT min_stock_level FROM inventory WHERE item_name = :item_name",
+                    "SELECT min_stock_level, unit_price FROM inventory WHERE item_name = :item_name",
                     db_engine,
                     params={"item_name": line.item_name},
                 )
@@ -1309,7 +1312,7 @@ class FrontDeskOrchestratorAgent:
                         continue
 
                 min_stock_level = int(inventory_df.iloc[0]["min_stock_level"])
-                base_unit_price = float(inventory_df.iloc[0]["unit_price"])
+                unit_price_for_cost = float(inventory_df.iloc[0]["unit_price"])
 
                 if current_stock < min_stock_level:
                     reorder_qty = int(max(min_stock_level * 2 - current_stock, line.quantity))
@@ -1320,7 +1323,7 @@ class FrontDeskOrchestratorAgent:
                         item_name=line.item_name,
                         transaction_type="stock_orders",
                         quantity=reorder_qty,
-                        price=round(reorder_qty * base_unit_price, 2),
+                        price=round(reorder_qty * unit_price_for_cost, 2),
                         date=reorder_date,
                     )
 
@@ -1329,7 +1332,7 @@ class FrontDeskOrchestratorAgent:
         message = self._build_customer_message(
             parsed.intent, overall_status, line_responses
         )
-
+        _ = tla_generate_financial_report(parsed.request_date)
         return SystemResponse(
             overall_status=overall_status,
             lines=line_responses,
