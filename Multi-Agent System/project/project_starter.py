@@ -26,12 +26,14 @@ from smolagents import (
 )
 from dataclasses import dataclass, field
 from enum import Enum
-
+from smolagents.agents import PromptTemplates
 
 # Create an SQLite database
+
+dotenv.load_dotenv()
 db_engine = create_engine("sqlite:///munder_difflin.db")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-dotenv.load_dotenv()
+
 openai_api_key = os.getenv("OPENAI_API_KEY")
 base_url = os.getenv("OPENAI_BASE_URL")
 model = OpenAIServerModel(
@@ -866,8 +868,17 @@ def _normalize_date(input_date_str: str) -> str:
 @tool
 def ia_get_stock_level(item_name: str, as_of_date: str) -> Dict:
     """
-    IA tool (read-only): get stock level for one item as of date.
-    Uses: get_stock_level
+    IA tool (read-only): Retrieve stock level for one catalog item as of a given date.
+
+    Args:
+        item_name (str): Catalog item name to look up (must match inventory/transactions item_name).
+        as_of_date (str): Date cutoff in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+
+    Returns:
+        Dictionary with:
+            - item_name (str): Name of the item
+            - current_stock (int): Net stock on hand as of the date
+            - as_of_date (str): Normalized date used for the lookup (YYYY-MM-DD)
     """
     as_of_date = _normalize_date(as_of_date)
     stock_info = get_stock_level(item_name, as_of_date)
@@ -884,8 +895,13 @@ def ia_get_stock_level(item_name: str, as_of_date: str) -> Dict:
 @tool
 def ia_get_all_inventory(as_of_date: str) -> Dict[str, int]:
     """
-    IA tool (read-only): get all inventory as of date.
-    Uses: get_all_inventory
+    IA tool (read-only): Retrieve full inventory snapshot as of a given date.
+
+    Args:
+        as_of_date (str): Date cutoff in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+
+    Returns:
+        Dictionary mapping item_name (str) -> stock level (int) as of the given date.
     """
     as_of_date = _normalize_date(as_of_date)
     return {k: int(v) for k, v in get_all_inventory(as_of_date=as_of_date).items()}
@@ -897,8 +913,21 @@ def ia_get_all_inventory(as_of_date: str) -> Dict[str, int]:
 @tool
 def pa_search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dict]:
     """
-    PA tool (read-only): search quote history for similar requests.
-    Uses: search_quote_history
+    PA tool (read-only): Search historical quotes using keyword terms for retrieval (RAG context).
+
+    Args:
+        search_terms (List[str]): List of keywords/phrases to match against prior requests and quote explanations.
+        limit (int): Maximum number of historical quote matches to return.
+
+    Returns:
+        A list of dictionaries (each is a historical quote match), typically including:
+            - original_request (str)
+            - total_amount (float)
+            - quote_explanation (str)
+            - job_type (str)
+            - order_size (str)
+            - event_type (str)
+            - order_date (str)
     """
     return search_quote_history(search_terms=search_terms, limit=int(limit))
 
@@ -907,8 +936,14 @@ def pa_search_quote_history(search_terms: List[str], limit: int = 5) -> List[Dic
 @tool
 def tla_get_supplier_delivery_date(request_date: str, quantity: int) -> str:
     """
-    TLA tool (read-only): get supplier delivery date based on requested date and quantity.
-    Uses: get_supplier_delivery_date
+    TLA tool (read-only): Compute earliest supplier delivery date given request date and quantity.
+
+    Args:
+        request_date (str): Starting date in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+        quantity (int): Number of units that must be sourced from supplier (e.g., shortage quantity).
+
+    Returns:
+        Earliest delivery date as a YYYY-MM-DD string.
     """
     return get_supplier_delivery_date(
         input_date_str=_normalize_date(request_date), quantity=quantity
@@ -919,7 +954,19 @@ def tla_get_supplier_delivery_date(request_date: str, quantity: int) -> str:
 def tla_create_transaction(
     item_name: str, transaction_type: str, quantity: int, price: float, date: str
 ) -> int:
-    """TLA tool (DB write): create a sales or stock_orders transaction. Uses create_transaction."""
+    """
+    TLA tool (DB write): Create a transaction record in the database.
+
+    Args:
+        item_name (str): Catalog item name for the transaction (may be None for the initial cash seed, but in this system it should be a valid item for sales/stock_orders).
+        transaction_type (str): Must be either "sales" or "stock_orders".
+        quantity (int): Number of units for the transaction.
+        price (float): Total price for the transaction (not unit price).
+        date (str): Transaction date in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+
+    Returns:
+        Integer transaction ID of the inserted database row.
+    """
     return int(
         create_transaction(
             item_name=item_name,
@@ -933,13 +980,35 @@ def tla_create_transaction(
 
 @tool
 def tla_get_cash_balance(as_of_date: str) -> float:
-    """TLA tool (read-only): get current cash balance as of date. Uses get_cash_balance."""
+    """
+    TLA tool (read-only): Retrieve cash balance as of a given date.
+
+    Args:
+        as_of_date (str): Date cutoff in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+
+    Returns:
+        Cash balance (float) as of the given date.
+    """
     return float(get_cash_balance(as_of_date=_normalize_date(as_of_date)))
 
 
 @tool
 def tla_generate_financial_report(as_of_date: str) -> Dict:
-    """TLA tool (read-only): generate financial report as of date. Uses generate_financial_report."""
+    """
+    TLA tool (read-only): Generate a financial report as of a given date.
+
+    Args:
+        as_of_date (str): Date cutoff in YYYY-MM-DD or full ISO format. Will be normalized to YYYY-MM-DD.
+
+    Returns:
+        A dictionary financial report, typically including:
+            - as_of_date (str)
+            - cash_balance (float)
+            - inventory_value (float)
+            - total_assets (float)
+            - inventory_summary (list)
+            - top_selling_products (list)
+    """
     return generate_financial_report(as_of_date=_normalize_date(as_of_date))
 
 
@@ -1017,7 +1086,7 @@ inventory_agent = ToolCallingAgent(
     description="Read-only agent for inventory checks like stock level and inventory snapshot.",
     model=model,
     tools=[ia_get_stock_level, ia_get_all_inventory],
-    system_prompt=IA_SYSTEM_PROMPT,
+    prompt_templates=PromptTemplates(system_prompt=IA_SYSTEM_PROMPT),
 )
 
 pricing_agent = ToolCallingAgent(
@@ -1025,7 +1094,7 @@ pricing_agent = ToolCallingAgent(
     description="Read-only agent for pricing and quote history reference, may consult quote history.",
     model=model,
     tools=[pa_search_quote_history],
-    system_prompt=PA_SYSTEM_PROMPT,
+    prompt_templates=PromptTemplates(system_prompt=PA_SYSTEM_PROMPT),
 )
 transactions_logistics_agent = ToolCallingAgent(
     name="TransactionsLogisticsAgent",
@@ -1037,7 +1106,7 @@ transactions_logistics_agent = ToolCallingAgent(
         tla_get_cash_balance,
         tla_generate_financial_report,
     ],
-    system_prompt=TLA_SYSTEM_PROMPT,
+    prompt_templates=PromptTemplates(system_prompt=TLA_SYSTEM_PROMPT),
 )
 def get_catalog_item(item_name: str) -> Optional[Dict]:
     for p in paper_supplies:
