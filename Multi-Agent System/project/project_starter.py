@@ -26,7 +26,10 @@ from smolagents import (
 )
 from dataclasses import dataclass, field
 from enum import Enum
-from smolagents.agents import PromptTemplates
+import json
+import sys
+from contextlib import redirect_stdout
+
 
 # Create an SQLite database
 
@@ -1081,40 +1084,74 @@ Return ONLY the dictionary.
 
 # Instantiate agents
 
-inventory_agent = ToolCallingAgent(
-    name="Inventory Agent",
-    description="Read-only agent for inventory checks like stock level and inventory snapshot.",
-    model=model,
-    tools=[ia_get_stock_level, ia_get_all_inventory],
-    prompt_templates=PromptTemplates(system_prompt=IA_SYSTEM_PROMPT),
-)
+class InventoryAgent(ToolCallingAgent):
+    def __init__(self, model):
+        super().__init__(
+            name="inventory_agent",
+            description=IA_SYSTEM_PROMPT,
+            model=model,
+            tools=[ia_get_stock_level, ia_get_all_inventory],
+        )
 
-pricing_agent = ToolCallingAgent(
-    name="Pricing Agent",
-    description="Read-only agent for pricing and quote history reference, may consult quote history.",
-    model=model,
-    tools=[pa_search_quote_history],
-    prompt_templates=PromptTemplates(system_prompt=PA_SYSTEM_PROMPT),
-)
-transactions_logistics_agent = ToolCallingAgent(
-    name="TransactionsLogisticsAgent",
-    description="Agent for delivery feasibility and the only agent permitted to write transactions.",
-    model=model,
-    tools=[
-        tla_get_supplier_delivery_date,
-        tla_create_transaction,  # DB write (must be gated by orchestrator)
-        tla_get_cash_balance,
-        tla_generate_financial_report,
-    ],
-    prompt_templates=PromptTemplates(system_prompt=TLA_SYSTEM_PROMPT),
-)
+
+class PricingAgent(ToolCallingAgent):
+    def __init__(self, model):
+        super().__init__(
+            name="pricing_agent",
+            description=PA_SYSTEM_PROMPT,
+            model=model,
+            tools=[pa_search_quote_history],
+        )
+class TransactionsLogisticsAgent(ToolCallingAgent):
+    def __init__(self, model):
+        super().__init__(
+            name="transactions_logistics_agent",
+            description=TLA_SYSTEM_PROMPT,
+            model=model,
+            tools=[
+                tla_get_supplier_delivery_date,
+                tla_create_transaction,
+                tla_get_cash_balance,
+                tla_generate_financial_report,
+            ],
+        )
+
+
+
+
+
+
+# inventory_agent = ToolCallingAgent(
+#     name="Inventory Agent",
+#     description="Read-only agent for inventory checks like stock level and inventory snapshot.",
+#     model=model,
+#     tools=[ia_get_stock_level, ia_get_all_inventory], 
+# )
+
+# pricing_agent = ToolCallingAgent(
+#     name="Pricing Agent",
+#     description="Read-only agent for pricing and quote history reference, may consult quote history.",
+#     model=model,
+#     tools=[pa_search_quote_history],
+# )
+# transactions_logistics_agent = ToolCallingAgent(
+#     name="TransactionsLogisticsAgent",
+#     description="Agent for delivery feasibility and the only agent permitted to write transactions.",
+#     model=model,
+#     tools=[
+#         tla_get_supplier_delivery_date,
+#         tla_create_transaction,  # DB write (must be gated by orchestrator)
+#         tla_get_cash_balance,
+#         tla_generate_financial_report,
+#     ],
+# )
 def get_catalog_item(item_name: str) -> Optional[Dict]:
     for p in paper_supplies:
         if p["item_name"].lower() == item_name.lower():
             return p
     return None
 
-class FrontDeskOrchestratorAgent:
+class FrontDeskOrchestratorAgent(ToolCallingAgent):
     """
     Orchestrator agent that manages the flow of information and decision-making between the Inventory Agent, Pricing Agent, and Transactions & Logistics Agent.
 
@@ -1126,6 +1163,28 @@ class FrontDeskOrchestratorAgent:
     - Never write to DB
     - Calls Inventory Agent -> Pricing Agent -> Transactions & Logistics Agent in sequence, passing necessary information and context.
     """
+    def __init__(self, model:OpenAIServerModel):
+        self.model = model
+        super().__init__(
+            name="front_desk_orchestrator",
+            description="Orchestrates IA->PA->TLA. Never writes to DB.",
+            model=model,
+            tools=[],  # orchestrator itself uses no tools
+        )
+       #Initialize agents
+        self.inventory_agent = InventoryAgent(model)
+        self.pricing_agent = PricingAgent(model)
+        self.transactions_logistics_agent = TransactionsLogisticsAgent(model)
+    
+    def plan(self, parsed: ParsedRequest) -> Dict:
+        plan_out = self.run(
+            "Produce a plan ONLY as a Python dict with keys: "
+            "{'steps': [str], 'notes': str}. "
+            f"Request intent={parsed.intent}, items={[(i.item_name, i.quantity) for i in parsed.items]}"
+        )
+        if isinstance(plan_out, dict):
+            return plan_out
+        return ast.literal_eval(str(plan_out))
 
     def parse_request_from_row(self, row: pd.Series) -> ParsedRequest:
         """
@@ -1135,50 +1194,66 @@ class FrontDeskOrchestratorAgent:
 
         request_date = row["request_date"].strftime("%Y-%m-%d")
         raw_text = row["request"]
-
+        job = "" if pd.isna(row.get("job")) else row.get("job")
+        event = "" if pd.isna(row.get("event")) else row.get("event")
+        need_size = "" if pd.isna(row.get("need_size")) else row.get("need_size")
+        catalog_names = [p["item_name"] for p in paper_supplies]
         parsing_prompt = f"""
-                You are the Front Desk Agent for Beaver’s Choice Paper Company.
+            You are the Front Desk Agent for Beaver’s Choice Paper Company.
 
-                Extract structured information from the customer request below.
+            Extract structured information from the customer request below.
 
-                Return ONLY a Python dictionary with this exact structure:
+            APPROVED CATALOG ITEM NAMES (choose ONLY from this list, exact spelling/case):
+            {catalog_names}
 
-                {{
-                "intent": "QUOTE" or "ORDER",
-                "items": [
-                    {{"item_name": str, "quantity": int}}
-                ],
-                "requested_by": "YYYY-MM-DD" or None
-                }}
+            IMPORTANT RULE:
+            - Only include items that match the approved catalog list.
+            - If the customer mentions non-catalog items (e.g., balloons, streamers, washi tape, tickets), DO NOT include them in "items".
 
-                Rules:
-                - Infer intent: if the customer clearly wants to place an order → ORDER, otherwise QUOTE.
-                - Extract all items and quantities mentioned.
-                - Normalize item_name exactly as written in the catalog if possible.
-                - If delivery deadline mentioned (e.g., "by April 15, 2025"), convert to YYYY-MM-DD.
-                - If no deadline mentioned, use None.
-                - Return ONLY the dictionary. No extra text.
+            Return ONLY a Python dictionary with this exact structure:
+            {{
+            "intent": "QUOTE" or "ORDER",
+            "items": [{{"item_name": str, "quantity": int}}],
+            "requested_by": "YYYY-MM-DD" or None
+            }}
 
-                Customer Context:
-                Job: {row.get("job", "")}
-                Event: {row.get("event", "")}
-                Need Size: {row.get("need_size", "")}
-                Request Date: {request_date}
+            Other rules:
+            - Infer intent: if the customer clearly wants to place an order → ORDER, otherwise QUOTE.
+            - Extract quantities as integers (e.g., 10,000 -> 10000).
+            - If delivery deadline mentioned, convert to YYYY-MM-DD; else None.
+            - Return ONLY the dictionary. No extra text.
 
-                Customer Request:
-                {raw_text}
-                """
+            Customer Context:
+            Job: {job}
+            Event: {event}
+            Need Size: {need_size}
+            Request Date: {request_date}
+
+            Customer Request:
+            {raw_text}
+            """
 
         try:
-            reply = model.run(parsing_prompt)
-            # Strip markdown fences if the model returns ```python ... ```
-            reply = reply.strip()
-            if reply.startswith("```"):
-                reply = reply.split("\n", 1)[1]
-                if reply.endswith("```"):
-                    reply = reply.rsplit("```", 1)[0]
-                reply = reply.strip()
-            parsed_dict = ast.literal_eval(reply)
+                        # reply may be a dict already (ToolCallingAgent can return structured objects)
+            reply = self.run(parsing_prompt)
+            if isinstance(reply, dict):
+                parsed_dict = reply
+            else:
+                # reply is a string
+                reply = str(reply).strip()
+
+                # Remove ``` fences if present
+                if reply.startswith("```"):
+                    reply = reply.split("\n", 1)[1]
+                    if reply.endswith("```"):
+                        reply = reply.rsplit("```", 1)[0]
+                    reply = reply.strip()
+
+                # Try JSON first, fallback to Python-literal dict
+                try:
+                    parsed_dict = json.loads(reply)
+                except Exception:
+                    parsed_dict = ast.literal_eval(reply)
 
             if not isinstance(parsed_dict, dict):
                 raise ValueError("Parsed output is not a dictionary.")
@@ -1209,7 +1284,14 @@ class FrontDeskOrchestratorAgent:
                 missing_fields=[],
             )
 
-        except Exception:
+        except Exception as e:
+            print("PARSING ERROR:", repr(e))
+            # Optional: print reply if it exists
+            try:
+                print("RAW LLM REPLY:", reply)
+            except NameError:
+                pass
+
             return ParsedRequest(
                 raw_text=raw_text,
                 request_date=request_date,
@@ -1221,11 +1303,6 @@ class FrontDeskOrchestratorAgent:
                 requested_by=None,
                 missing_fields=["Parsing failed"],
             )
-
-    def __init__(self, inventory_agent, pricing_agent, transactions_logistics_agent):
-        self.inventory_agent = inventory_agent
-        self.pricing_agent = pricing_agent
-        self.transactions_logistics_agent = transactions_logistics_agent
 
     def handle_request(self, parsed: ParsedRequest) -> SystemResponse:
         # TODO: implement to your locked flow:
@@ -1277,6 +1354,7 @@ class FrontDeskOrchestratorAgent:
                 continue
             catalog_item = get_catalog_item(item.item_name)
             if not catalog_item:
+                # INVALID
                 line_responses.append(
                     LineResponse(
                         item_name=item.item_name,
@@ -1294,8 +1372,14 @@ class FrontDeskOrchestratorAgent:
             # 1B. Inventory Agent (IA)
             
             try:
-                ia_data = ia_get_stock_level(item.item_name, parsed.request_date)  # Convert string dict to actual dict
+                
+                # Convert string dict to actual dict
+                ia_reply = self.inventory_agent.run(
+                    f"Return ONLY a Python dict with keys item_name,current_stock,as_of_date "
+                    f"for item_name='{item.item_name}' as_of_date='{parsed.request_date}'."
+                )
 
+                ia_data = ia_reply if isinstance(ia_reply, dict) else ast.literal_eval(str(ia_reply))
                 inventory_ctx = InventoryContext(
                     item_name=ia_data["item_name"],
                     as_of_date=ia_data["as_of_date"],
@@ -1346,7 +1430,7 @@ class FrontDeskOrchestratorAgent:
             )
 
             try:
-                pa_data = ast.literal_eval(pa_reply)  # Convert string dict to actual dict
+                pa_data = pa_reply if isinstance(pa_reply, dict) else ast.literal_eval(str(pa_reply))  # Convert string dict to actual dict
                 discount_rate = float(pa_data["discount_rate"])
                 discount_rate = max(0.0, min(discount_rate, 0.30))  # safety clamp
 
@@ -1499,6 +1583,10 @@ class FrontDeskOrchestratorAgent:
             parsed.intent, overall_status, line_responses
         )
         _ = tla_generate_financial_report(parsed.request_date)  # Update financial report context for next request
+        for lr in line_responses:
+            if lr.status == FulfillmentStatus.INVALID:
+                print(f"[INVALID LINE] item={lr.item_name} qty={lr.quantity} reason={lr.reason}")
+                
         return SystemResponse(
             overall_status=overall_status,
             lines=line_responses,
@@ -1535,9 +1623,7 @@ class FrontDeskOrchestratorAgent:
         return "Request processed."
 
 
-fdo = FrontDeskOrchestratorAgent(
-    inventory_agent, pricing_agent, transactions_logistics_agent
-)
+fdo = FrontDeskOrchestratorAgent(model)
 # Run your test scenarios by writing them here. Make sure to keep track of them.
 
 
@@ -1572,14 +1658,16 @@ def run_test_scenarios():
     ############
 
     results = []
-    for idx, row in quote_requests_sample.iterrows():
+
+    for request_number, (_, row) in enumerate(quote_requests_sample.iterrows(), start=1):
         request_date = row["request_date"].strftime("%Y-%m-%d")
 
-        print(f"\n=== Request {idx+1} ===")
+        print(f"\n=== Request {request_number} ===")
         print(f"Context: {row['job']} organizing {row['event']}")
         print(f"Request Date: {request_date}")
         print(f"Cash Balance: ${current_cash:.2f}")
         print(f"Inventory Value: ${current_inventory:.2f}")
+
 
         # Process request
         # parsed = ParsedRequest(
@@ -1618,18 +1706,19 @@ def run_test_scenarios():
         current_cash = report["cash_balance"]
         current_inventory = report["inventory_value"]
 
+
+
         print(f"Response: {response}")
         print(f"Updated Cash: ${current_cash:.2f}")
         print(f"Updated Inventory: ${current_inventory:.2f}")
-
         results.append(
             {
-                "request_id": idx + 1,
+                "request_id": request_number,
                 "request_date": request_date,
                 "intent": system_response.intent.value,
                 "overall_status": system_response.overall_status.value,
-                "line_statuses": [line.status.value for line in system_response.lines],
-                "line_reasons": [line.reason for line in system_response.lines],
+                "line_statuses": json.dumps([line.status.value for line in system_response.lines]),
+                "line_reasons": json.dumps([line.reason for line in system_response.lines]),
                 "cash_balance": current_cash,
                 "inventory_value": current_inventory,
                 "response": response,
@@ -1651,4 +1740,8 @@ def run_test_scenarios():
 
 
 if __name__ == "__main__":
-    results = run_test_scenarios()
+    log_path = os.path.join(BASE_DIR, "run_output.txt")
+    with open(log_path, "w", encoding="utf-8") as f:
+        with redirect_stdout(f):
+            run_test_scenarios()
+    print(f"Wrote run log to: {log_path}")
