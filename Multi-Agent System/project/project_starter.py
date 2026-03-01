@@ -1020,10 +1020,12 @@ def tla_generate_financial_report(as_of_date: str) -> Dict:
 
 # Agent propmts
 
-IA_SYSTEM_PROMPT = """
+IA_SYSTEM_PROMPT = """"
 You are the Inventory Agent (IA). You are read-only.
-Use only the inventory tools to answer questions about current stock.
-Return factual, structured output. Do not guess. Do not write to the DB.
+You MUST use ia_get_stock_level or ia_get_all_inventory to answer.
+Do NOT guess. Do NOT write to the DB.
+Return ONLY a Python dictionary with keys:
+{'item_name': str, 'current_stock': int, 'as_of_date': 'YYYY-MM-DD'} for stock level requests.
 """
 PA_SYSTEM_PROMPT = """
 You are the Pricing Agent (PA) for Beaver’s Choice Paper Company.
@@ -1317,8 +1319,13 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
         """
         Deterministic orchestration entry point. Follows locked flowchart exactly.
         """
-        _ = ia_get_all_inventory(parsed.request_date)
-        _ = tla_get_cash_balance(parsed.request_date)
+        _ = self.inventory_agent.run(
+            f"Use ia_get_all_inventory(as_of_date='{parsed.request_date}') and return only the inventory dict."
+        )
+        _ = self.transactions_logistics_agent.run(
+            f"Use tla_get_cash_balance(as_of_date='{parsed.request_date}') and return only the float."
+        )
+        shortage_by_item: Dict[str, int] = {}
         if parsed.missing_fields:
             return SystemResponse(
                 intent=parsed.intent,
@@ -1375,8 +1382,10 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
                 
                 # Convert string dict to actual dict
                 ia_reply = self.inventory_agent.run(
-                    f"Return ONLY a Python dict with keys item_name,current_stock,as_of_date "
-                    f"for item_name='{item.item_name}' as_of_date='{parsed.request_date}'."
+                    "Use ia_get_stock_level to fetch stock.\n"
+                    f"item_name='{item.item_name}'\n"
+                    f"as_of_date='{parsed.request_date}'\n"
+                    "Return ONLY the dict."
                 )
 
                 ia_data = ia_reply if isinstance(ia_reply, dict) else ast.literal_eval(str(ia_reply))
@@ -1388,6 +1397,7 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
                     shortage_qty=max(0, item.quantity - ia_data["current_stock"]),
                     in_catalog=True,
                 )
+                shortage_by_item[item.item_name] = inventory_ctx.shortage_qty
             except Exception:
                 line_responses.append(
                     LineResponse(
@@ -1411,28 +1421,20 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
                 (parsed.event or "").lower(),
                 (parsed.need_size or "").lower(),
             ]
-            history = pa_search_quote_history(
-            search_terms=search_terms,
-            limit=5
-            )
+            
 
             pa_reply = self.pricing_agent.run(
-                "Use the provided historical quote data to recommend a discount rate.\n\n"
-                f"item_name={item.item_name}\n"
-                f"quantity={item.quantity}\n"
-                f"base_unit_price={base_unit_price}\n"
-                f"quote_history={history}\n\n"
-                "Rules:\n"
-                "- Analyze similarities in quantity, job_type, order_size, and event_type.\n"
-                "- If history is weak or empty, fall back to conservative quantity-based discount.\n"
-                "- Return ONLY a Python dictionary:\n"
-                "{'discount_rate': float, 'rationale': str}"
+                "You must call pa_search_quote_history(search_terms, limit) to retrieve historical quotes.\n"
+                f"search_terms={search_terms}\n"
+                "limit=5\n\n"
+                "Then recommend discount_rate and rationale.\n"
+                "Return ONLY a Python dict: {'discount_rate': float, 'rationale': str}\n"
+                "discount_rate must be between 0.0 and 0.30 (example: 0.05 not 5)."
             )
 
             try:
                 pa_data = pa_reply if isinstance(pa_reply, dict) else ast.literal_eval(str(pa_reply))  # Convert string dict to actual dict
-                discount_rate = float(pa_data["discount_rate"])
-                discount_rate = max(0.0, min(discount_rate, 0.30))  # safety clamp
+                discount_rate = max(0.0, min(float(pa_data["discount_rate"]), 0.30))  # safety clamp
 
 
                 subtotal = round(base_unit_price * item.quantity, 2)
@@ -1464,17 +1466,18 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
                 continue
             
             # 1D. Transactions & Logistics Agent (TLA)
-            # Computes delivery date + fulfillment status
-            # tla_reply = self.transactions_logistics_agent.run(
-            #     f"For item '{item.item_name}', quantity {item.quantity}, "
-            #     f"request_date {parsed.request_date}, requested_by {parsed.requested_by}. "
-            #     f"Return a Python dict with earliest_delivery_date and reason."
-            # )
             try:
                 if inventory_ctx.shortage_qty > 0:
-                    # If there's a shortage, we need to check supplier delivery date
-                    delivery_date= tla_get_supplier_delivery_date(parsed.request_date, inventory_ctx.shortage_qty)
-                    tla_reason = "Supplier lead time required due to shortage."
+                    tla_reply = self.transactions_logistics_agent.run(
+                        "Return ONLY a Python dict with keys "
+                        "{'earliest_delivery_date': 'YYYY-MM-DD', 'reason': str}. "
+                        f"Use the tla_get_supplier_delivery_date tool. "
+                        f"request_date='{parsed.request_date}', quantity={inventory_ctx.shortage_qty}."
+                    )
+
+                    tla_data = tla_reply if isinstance(tla_reply, dict) else ast.literal_eval(str(tla_reply))
+                    delivery_date = tla_data["earliest_delivery_date"]
+                    tla_reason = tla_data.get("reason", "") or "Supplier lead time required due to shortage."
                 else:
                     delivery_date = parsed.request_date  # Can fulfill immediately from stock
                     tla_reason = ""
@@ -1535,40 +1538,54 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
             parsed.intent == Intent.ORDER
             and overall_status == FulfillmentStatus.FULFILLED
         ):
+            
             # Only the TLA can write to the DB, and only when the intent is ORDER and overall status is FULFILLED
             for line in line_responses:
                 if line.status != FulfillmentStatus.FULFILLED:
                     continue  # Skip lines that are not fulfilled 
-                tla_create_transaction(
-                    item_name=line.item_name,
-                    transaction_type="sales",
-                    quantity=line.quantity,
-                    price=line.total_price,
-                    date=parsed.request_date,
-                )
-                # After sales transaction, check if reorder needed
-                # Get current stock AFTER the sale date
-                stock_info = get_stock_level(line.item_name, parsed.request_date)
-                current_stock = int(stock_info["current_stock"].iloc[0])
 
-                # Get min_stock_level from inventory table
+
+
+                        # Look up cost + min stock level
                 inventory_df = pd.read_sql(
                     "SELECT min_stock_level, unit_price FROM inventory WHERE item_name = :item_name",
                     db_engine,
                     params={"item_name": line.item_name},
                 )
-
                 if inventory_df.empty:
-                        continue
+                    continue
 
                 min_stock_level = int(inventory_df.iloc[0]["min_stock_level"])
                 unit_price_for_cost = float(inventory_df.iloc[0]["unit_price"])
 
+                # Procure shortage on delivery date BEFORE recording sale ---
+                shortage_qty = int(shortage_by_item.get(line.item_name, 0))
+                if shortage_qty > 0:
+                    tla_create_transaction(
+                        item_name=line.item_name,
+                        transaction_type="stock_orders",
+                        quantity=shortage_qty,
+                        price=round(shortage_qty * unit_price_for_cost, 2),
+                        date=line.delivery_date,  # arrival date
+                    )
+
+                # Record the sale on delivery date (already correct)
+                tla_create_transaction(
+                    item_name=line.item_name,
+                    transaction_type="sales",
+                    quantity=line.quantity,
+                    price=line.total_price,
+                    date=line.delivery_date,
+                )
+
+                # After sale, check stock and reorder if needed
+                stock_info = get_stock_level(line.item_name, line.delivery_date)
+                current_stock = int(stock_info["current_stock"].iloc[0])
+
                 if current_stock < min_stock_level:
                     reorder_qty = int(max(min_stock_level * 2 - current_stock, line.quantity))
 
-                    # Future-dated reorder using supplier lead time
-                    reorder_date = tla_get_supplier_delivery_date(parsed.request_date, reorder_qty)
+                    reorder_date = tla_get_supplier_delivery_date(line.delivery_date, reorder_qty)
                     tla_create_transaction(
                         item_name=line.item_name,
                         transaction_type="stock_orders",
