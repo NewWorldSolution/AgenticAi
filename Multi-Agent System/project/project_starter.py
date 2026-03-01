@@ -1465,6 +1465,8 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
                 line_statuses.append(FulfillmentStatus.INVALID)
                 continue
             
+
+            
             # 1D. Transactions & Logistics Agent (TLA)
             try:
                 if inventory_ctx.shortage_qty > 0:
@@ -1600,9 +1602,6 @@ class FrontDeskOrchestratorAgent(ToolCallingAgent):
             parsed.intent, overall_status, line_responses
         )
         _ = tla_generate_financial_report(parsed.request_date)  # Update financial report context for next request
-        for lr in line_responses:
-            if lr.status == FulfillmentStatus.INVALID:
-                print(f"[INVALID LINE] item={lr.item_name} qty={lr.quantity} reason={lr.reason}")
                 
         return SystemResponse(
             overall_status=overall_status,
